@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Deliberately minimal: the page talks to the local LLLanyard server over HTTP and is given no Tauri APIs.",
+  "windows": ["main"],
+  "permissions": []
+}

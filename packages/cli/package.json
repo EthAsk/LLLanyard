@@ -1,0 +1,46 @@
+{
+  "name": "@lllanyard/cli",
+  "version": "0.1.2",
+  "description": "Keep API keys out of AI agents: keys live in your OS keychain and agents only see placeholder tokens.",
+  "type": "module",
+  "bin": {
+    "lllanyard": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@lllanyard/core": "^0.1.2",
+    "@lllanyard/proxy": "^0.1.2",
+    "@lllanyard/ui": "^0.1.2"
+  },
+  "license": "BUSL-1.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EthAsk/LLLanyard.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://lllanyard.app",
+  "bugs": {
+    "url": "https://github.com/EthAsk/LLLanyard/issues"
+  },
+  "keywords": [
+    "api-keys",
+    "secrets",
+    "keychain",
+    "ai-agents",
+    "claude",
+    "mcp",
+    "llm",
+    "security"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "cp ../../LICENSE.md ../../README.md ."
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "@lllanyard/proxy",
+  "version": "0.1.2",
+  "description": "LLLanyard proxy: swaps placeholder tokens for real API keys on the way out.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@lllanyard/core": "^0.1.2"
+  },
+  "license": "BUSL-1.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EthAsk/LLLanyard.git",
+    "directory": "packages/proxy"
+  },
+  "homepage": "https://lllanyard.app",
+  "bugs": {
+    "url": "https://github.com/EthAsk/LLLanyard/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "cp ../../LICENSE.md ."
+  }
+}

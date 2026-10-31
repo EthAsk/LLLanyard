@@ -1,0 +1,40 @@
+{
+  "name": "@lllanyard/ui",
+  "version": "0.1.2",
+  "description": "LLLanyard local web UI.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "BUSL-1.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@lllanyard/core": "^0.1.2",
+    "@lllanyard/proxy": "^0.1.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EthAsk/LLLanyard.git",
+    "directory": "packages/ui"
+  },
+  "homepage": "https://lllanyard.app",
+  "bugs": {
+    "url": "https://github.com/EthAsk/LLLanyard/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "cp ../../LICENSE.md ."
+  }
+}

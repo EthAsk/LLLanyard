@@ -1,0 +1,48 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+permissions: { contents: read }
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ matrix.node }}" }
+      - name: Install bubblewrap (Linux sandbox tests)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces; allow them on the CI runner.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - run: npm install
+      - run: npm run build
+      - run: npm test
+      - name: Smoke test (real CLI, proxy, UI, MCP)
+        run: node tools/smoke.mjs
+      - name: Doctor (reports sandbox availability)
+        run: node packages/cli/dist/index.js doctor || true
+        env: { LLLANYARD_BACKEND: file, LLLANYARD_VAULT_PASSPHRASE: "ci-only-passphrase-123" }
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: npm install
+      - run: npx tsc -b packages/core packages/proxy packages/ui packages/cli   # full type-check (not --noCheck)
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: npm install
+      - run: npm audit --omit=dev --audit-level=high

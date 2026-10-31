@@ -1,0 +1,42 @@
+{
+  "name": "@lllanyard/core",
+  "version": "0.1.2",
+  "description": "LLLanyard core: keychain vault, placeholder tokens and licensing.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@napi-rs/keyring": "^1.1.0"
+  },
+  "license": "BUSL-1.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EthAsk/LLLanyard.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://lllanyard.app",
+  "bugs": {
+    "url": "https://github.com/EthAsk/LLLanyard/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "cp ../../LICENSE.md ."
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "lllanyard",
+  "private": true,
+  "version": "0.1.2",
+  "description": "Keep API keys out of AI agents. Keys live in your OS keychain; agents only ever see a worthless placeholder token.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -b packages/core packages/proxy packages/ui packages/cli",
+    "test": "tsx --test \"packages/*/test/*.test.ts\"",
+    "start": "node packages/cli/dist/index.js start",
+    "smoke": "node tools/smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "BUSL-1.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EthAsk/LLLanyard.git"
+  }
+}

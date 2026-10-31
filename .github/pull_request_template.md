@@ -1,0 +1,4 @@
+- [ ] `npm test` passes
+- [ ] Security-relevant change has a test that fails without it
+- [ ] No keys, tokens or secrets in code, logs, tests or argv
+- [ ] I agree my contribution is under the project license (see CONTRIBUTING.md)

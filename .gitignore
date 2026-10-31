@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+.DS_Store
+*.log
+coverage/
+*.pem
+*.key
+.lllanyard/
+license-private*
+
+# Copied in by prepack for npm
+packages/*/LICENSE.md
+packages/cli/README.md
