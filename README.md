@@ -211,8 +211,20 @@ Keys that sat in plaintext should be treated as exposed: after `scan --import`, 
 
 ## Tiers
 
-Free: up to 10 keys and 5 agent tokens, local only. Pro and Team ([pricing](https://lllanyard.app/pricing)) raise the key
-limit and add the shared proxy for a team and the usage dashboard.
+An *agent* is one AI tool or app you link in (Claude Code, Cursor, an SDK script). Each gets its own agent token.
+
+| | Keys | Agent tokens | Where it runs |
+|---|---|---|---|
+| **Free** | 10 | 5 | This computer only |
+| **Pro** | 250 | 10 per user | Shared between one person's own devices (laptop, desktop, home server) |
+| **Team** | 500 | Unlimited | Shared on your network with the other members of your team |
+
+Pro and Team also add the usage dashboard. See [pricing](https://lllanyard.app/pricing). Lowering a limit never stops
+tokens you already have.
+
+Everything runs on your own computers. Keys never go to us or to any cloud service, and there's no account or telemetry.
+When the proxy is shared, one of your machines holds the keys and the other devices' tools connect to it over your
+network or VPN.
 
 ### Desktop app and rotation assistant
 
@@ -244,17 +256,19 @@ OpenAI key due for rotation?" or "what is the base URL for GitHub?" and cannot r
 passphrase must come from `LLLANYARD_VAULT_PASSPHRASE_FILE` (no prompt is possible on stdio). Note that anything an agent can
 run as your user can also run `lllanyard` directly; the MCP server is a safe *information* channel, not an access boundary.
 
-### Sharing with a team (Pro)
+### Sharing across your devices (Pro) or with your team (Team)
 
-One computer (a small server, or an always-on workstation) holds the real keys; teammates get their own agent tokens.
+One computer (a small server, or an always-on workstation) holds the real keys. Every other device or teammate's tool
+gets its own agent token. With **Pro**, share it only between your own devices. To share it with other people, each
+of them needs a **Team** seat.
 
 ```
 lllanyard serve --host 0.0.0.0 --port 3443 --tls-cert cert.pem --tls-key key.pem --allow-host keys.example.com
 lllanyard agent create alice-laptop --client acme --providers openai --expires 90d
 ```
 
-Teammates point their tools at `https://keys.example.com:3443/openai/v1` and use their token as the API key. They can
-*use* a key but never read it. Revoking a token cuts that person off within ~10 seconds.
+Each device or teammate points their tools at `https://keys.example.com:3443/openai/v1` and uses their token as the API
+key. They can *use* a key but never read it. Revoking a token cuts that tool off within ~10 seconds.
 
 | Safeguard | |
 |---|---|
@@ -264,7 +278,7 @@ Teammates point their tools at `https://keys.example.com:3443/openai/v1` and use
 | Per-person scope | Each token is limited to a client (`--client`), optionally to providers, and can expire (`--expires`) |
 | Audit trail | Every request is logged with agent name and caller address; `lllanyard usage` breaks it down by agent and client |
 | Rate limits + kill switch | Per token, as before |
-| Seats | Free: 5 agent tokens. Licensed: 3 tokens per seat |
+| Agent tokens | Free: 5. Pro: 10 per user. Team: unlimited |
 
 Put it behind a VPN (Tailscale, WireGuard) or a firewall if you can; the lockout and TLS are a second layer, not a reason to
 expose it to the whole internet. `X-Forwarded-For` is deliberately ignored, so a reverse proxy in front shows as one address.
@@ -322,7 +336,7 @@ LLLanyard is source-available under the **Business Source License 1.1** (`LICENS
 In plain words (the license text is what counts):
 
 - You can read, copy, modify and **evaluate or develop** with it freely.
-- **Production use** is free within the free tier (10 keys, 5 agent tokens, local only). Beyond that you need a paid license key
+- **Production use** is free within the free tier (10 keys and 5 agent tokens, on one computer). Beyond that you need a paid license key
   from Ethan Askew T/A LLLanyard.
 - You **may not remove, bypass or tamper with the license-key checks or usage limits**, or help others do so. Doing it makes
   your use unlicensed, and the license terminates.

@@ -144,7 +144,7 @@ export function createMcpHandler(deps: McpDeps) {
     switch (msg.method) {
       case 'initialize': {
         const want = String(msg.params?.protocolVersion ?? '');
-        return ok({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0]!, capabilities: { tools: {} }, serverInfo: { name: 'lllanyard', version: '0.1.2' },
+        return ok({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0]!, capabilities: { tools: {} }, serverInfo: { name: 'lllanyard', version: '0.1.3' },
           instructions: [
             'The user keeps their API keys in LLLanyard (the OS keychain). No tool here returns a key, and you must never ask for one or look for keys in .env or config files.',
             'Each key is stored as provider + label (e.g. github:default, jira:secret) with the environment variable scripts get it as. key_status lists every stored key; list_providers covers only the HTTP APIs the proxy calls, so most script keys are not in it.',

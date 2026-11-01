@@ -21,8 +21,8 @@ export const TIER_LIMITS: Record<Tier, { maxKeys: number }> = {
   team: { maxKeys: 500 },
 };
 
-/** Agent tokens allowed per licensed seat (a person typically has a few devices/agents). */
-export const AGENTS_PER_SEAT = 3;
+/** Agent tokens (one per AI tool or app linked in) per Pro user. Team has no limit. */
+export const AGENTS_PER_SEAT = 10;
 
 const b64u = (s: string) => Buffer.from(s, 'base64url');
 
@@ -64,10 +64,11 @@ export class LicenseStore {
     return v.ok ? { tier: v.payload.tier, payload: v.payload } : { tier: 'free', problem: v.reason }; // lapsed = free; existing keys keep working
   }
   limits(nowMs = Date.now()) { return TIER_LIMITS[this.status(nowMs).tier]; }
-  /** Free: 5 agents. Licensed: seats x AGENTS_PER_SEAT (never below the free allowance). */
+  /** Free: 5 agents. Pro: AGENTS_PER_SEAT per user. Team: unlimited. Only creating a token is checked: existing ones keep working. */
   maxAgents(nowMs = Date.now()): number {
     const st = this.status(nowMs);
-    return st.payload ? Math.max(FREE_LIMITS.maxAgents, st.payload.seats * AGENTS_PER_SEAT) : FREE_LIMITS.maxAgents;
+    if (!st.payload) return FREE_LIMITS.maxAgents;
+    return st.payload.tier === 'team' ? Number.POSITIVE_INFINITY : Math.max(FREE_LIMITS.maxAgents, st.payload.seats * AGENTS_PER_SEAT);
   }
 }
 

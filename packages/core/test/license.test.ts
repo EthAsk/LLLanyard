@@ -45,12 +45,16 @@ test('LicenseStore: free by default, pro lifts the key cap, expiry falls back to
   assert.equal(ls.status().tier, 'free');
 });
 
-test('agent allowance: 5 on free, seats x 3 when licensed (never below 5)', () => {
+test('agent allowance: 5 on free, 10 per Pro user, unlimited on Team', () => {
   const backend = new MemoryBackend();
   const ls = new LicenseStore(backend, PUB);
   assert.equal(ls.maxAgents(), 5);
-  ls.activate(issue('--tier', 'team', '--days', '10', '--seats', '10'));
-  assert.equal(ls.maxAgents(), 30);
   ls.activate(issue('--tier', 'pro', '--days', '10', '--seats', '1'));
-  assert.equal(ls.maxAgents(), 5);
+  assert.equal(ls.maxAgents(), 10);
+  ls.activate(issue('--tier', 'pro', '--days', '10', '--seats', '4'));
+  assert.equal(ls.maxAgents(), 40);
+  ls.activate(issue('--tier', 'team', '--days', '10', '--seats', '3'));
+  assert.equal(ls.maxAgents(), Number.POSITIVE_INFINITY);
+  ls.remove();
+  assert.equal(ls.maxAgents(), 5, 'a lapsed licence drops back to free');
 });

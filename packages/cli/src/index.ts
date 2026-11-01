@@ -496,8 +496,9 @@ async function main() {
       const port = str(flags.port) ? Number(str(flags.port)) : 3443;
       const s = await startProxy({ port, host, tls, allowedHosts: allowed });
       out(`${APP_NAME} shared proxy on ${tls ? 'https' : 'http'}://${host}:${s.port}  (hosts: ${allowed?.join(', ') ?? 'loopback'}). Keys stay in this computer's keychain.`);
-      out(`Teammates use: base URL https://${allowed?.[0] ?? host}:${s.port}/openai/v1 with their own agent token as the API key.`);
-      out('Create a token per person/device: lllanyard agent create alice-laptop --client acme --expires 90d');
+      out(`Other devices use: base URL https://${allowed?.[0] ?? host}:${s.port}/openai/v1 with their own agent token as the API key.`);
+      out('Create a token per AI tool: lllanyard agent create laptop-claude-code --client acme --expires 90d');
+      if (new LicenseStore().status().tier === 'pro') out('Pro covers your own devices. To share this proxy with other people, they need Team seats.');
       process.on('SIGINT', () => { s.close(); process.exit(0); });
       return;
     }

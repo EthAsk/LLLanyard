@@ -1,7 +1,7 @@
 {
   "name": "lllanyard-desktop",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "license": "BUSL-1.1",
   "scripts": { "dev": "tauri dev", "build": "tauri build" },
   "devDependencies": { "@tauri-apps/cli": "^2.0.0" }
