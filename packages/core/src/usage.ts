@@ -30,7 +30,7 @@ export function createUsageLog(file = usageLogPath(), maxBytes = 10 * 1024 * 102
   };
 }
 
-export interface UsageRecord { ts: string; agent?: string; client?: string; provider?: string; method?: string; path?: string; status?: number; ms?: number; reason?: string; killed?: boolean; event?: string; decision?: string; host?: string; tool?: string }
+export interface UsageRecord { ts: string; agent?: string; client?: string; provider?: string; method?: string; path?: string; status?: number; ms?: number; reason?: string; killed?: boolean; event?: string; decision?: string; host?: string; tool?: string; keys?: string[] }
 
 export function parseUsage(text: string, sinceMs = 0, untilMs = Infinity): UsageRecord[] {
   const out: UsageRecord[] = [];
@@ -59,6 +59,7 @@ export interface UsageSummary {
   perDay: { day: string; requests: number; errors: number }[];
   egressDenied: { host: string; tool: string; count: number }[];
   scriptRuns: { tool: string; count: number; last: string }[]; // commands started with `lllanyard exec`
+  deviceKeys: { device: string; tool: string; keys: string[]; count: number; last: string }[]; // keys sent to paired devices (exec --remote)
 }
 
 const pct = (xs: number[], p: number) => { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)]!; };
@@ -98,6 +99,12 @@ export function summarize(records: UsageRecord[], sinceMs: number, untilMs = Dat
       e.count++; if (r.ts > e.last) e.last = r.ts;
       return m.set(k, e);
     }, new Map<string, { tool: string; count: number; last: string }>()).values()].sort((a, b) => b.last.localeCompare(a.last)).slice(0, 20),
+    deviceKeys: [...records.filter((r) => r.event === 'device-keys').reduce((m, r) => {
+      const device = String(r.agent ?? '?').replace(/^device:/, ''), tool = String(r.tool ?? '?'), keys = Array.isArray(r.keys) ? r.keys.map(String) : [];
+      const k = `${device}\0${tool}\0${keys.join(',')}`, e = m.get(k) ?? { device, tool, keys, count: 0, last: r.ts };
+      e.count++; if (r.ts > e.last) e.last = r.ts;
+      return m.set(k, e);
+    }, new Map<string, { device: string; tool: string; keys: string[]; count: number; last: string }>()).values()].sort((a, b) => b.last.localeCompare(a.last)).slice(0, 20),
   };
 }
 

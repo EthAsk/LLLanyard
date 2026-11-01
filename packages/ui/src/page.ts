@@ -85,7 +85,7 @@ label.chk{flex-direction:row;align-items:center;gap:6px;color:var(--fg)}textarea
 <label>API style<select name="kind"><option value="ollama">Ollama</option><option value="openai">OpenAI-compatible (LM Studio, llama.cpp)</option></select></label>
 <button class="s" type="submit">Save</button></form><div id="aimsg"></div></div></section>
 <section id="settings"><div class="card"><h2>Proxy</h2><p class="mut" id="proxyinfo"></p><button class="p" id="proxytoggle" type="button"></button><div id="proxymsg"></div></div>
-<div class="card"><h2>License</h2><p id="licinfo"></p><form id="lic" class="row"><label>License key<input name="key" size="40" maxlength="2000" autocomplete="off"></label><button class="s" type="submit">Activate</button><button class="s d" id="licremove" type="button">Remove</button></form><div id="licmsg"></div></div>
+<div class="card"><h2>License</h2><p id="licinfo"></p><p id="teaminfo" class="mut"></p><form id="lic" class="row"><label>License key<input name="key" size="40" maxlength="2000" autocomplete="off"></label><button class="s" type="submit">Activate</button><button class="s d" id="licremove" type="button">Remove</button></form><div id="licmsg"></div></div>
 <div class="card"><h2>This computer</h2><div id="sysinfo" class="mut"></div></div></section>
 </main></div>
 <script nonce="__NONCE__">
@@ -167,6 +167,7 @@ function render(){
  // settings
  $('proxyinfo').textContent=S.proxy.running?('Listening on 127.0.0.1:'+S.proxy.port+'. Tools should use this address with their agent token.'):'The proxy is what tools talk to. Start it to let agents use your keys.';
  $('proxytoggle').textContent=S.proxy.running?'Stop proxy':'Start proxy';
+ var T=S.team;$('teaminfo').textContent=T?('Team server: '+T.url+'. Keys here are personal and stay on this computer; anything you have no key for here goes to the team server.'+(S.license.tier!=='team'?' (Not in use until a Team license is active.)':'')):(S.license.tier==='team'?'Not linked to a team server. To use your team\'s shared keys alongside your own, run: lllanyard team join https://<team server>:3443':'');
  var L=S.license;$('licinfo').textContent=L.payload?('Active: '+L.tier+', '+L.payload.seats+' seat(s), until '+new Date(L.payload.exp*1000).toISOString().slice(0,10)+'.'):('Free tier: up to '+S.limits.maxKeys+' keys and '+S.limits.maxAgents+' agent tokens.'+(L.problem?(' Stored license not applied: '+L.problem):''));
  var sys=$('sysinfo');clear(sys);
  sys.appendChild(h('div',{text:'Key storage: '+(S.backend==='file'?'encrypted file vault':'OS keychain')}));

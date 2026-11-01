@@ -1,6 +1,6 @@
 {
   "name": "@lllanyard/cli",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "Keep API keys out of AI agents: keys live in your OS keychain and agents only see placeholder tokens.",
   "type": "module",
   "bin": {
@@ -10,9 +10,9 @@
     "dist"
   ],
   "dependencies": {
-    "@lllanyard/core": "^0.1.3",
-    "@lllanyard/proxy": "^0.1.3",
-    "@lllanyard/ui": "^0.1.3"
+    "@lllanyard/core": "^0.1.5",
+    "@lllanyard/proxy": "^0.1.5",
+    "@lllanyard/ui": "^0.1.5"
   },
   "license": "BUSL-1.1",
   "engines": {

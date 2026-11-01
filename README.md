@@ -51,9 +51,10 @@ Compatibility notes:
 | `tool add <name> --env VAR=provider[:label] [--allow-host H] [--kill-on-leak] [--pass-env V] [--inherit-env] [--no-scrub] -- <command> [args…]` / `list` / `remove` | Approve a command (e.g. an MCP server) to receive keys as environment variables, with the safeguards below. |
 | `run <name> [-- args…]` | Run an approved tool with its keys injected and scrubbed from its output. Extra args are appended only if the tool was approved with `--allow-args`. For script tools (python, node, sh, pwsh…) the script file is pinned by hash at approval and `run` refuses if it has changed since; `--allow-args` is refused for bare interpreters (`python3 -c`, `-m`) and launchers (`env`, `xargs`, `sudo`, `npx`). `run --env … -- <cmd>` is a one-off that needs a human to confirm at a terminal. |
 | `scan [paths] [--import --apply [--redact]]` | Find plaintext keys in `.env` files, MCP/IDE configs and shell profiles, then move them into the keychain. Dry run unless `--apply`. |
-| `backup [--out FILE] [--passphrase-file F]` | Write one encrypted file (AES-256-GCM, scrypt passphrase) holding your keys and their metadata, custom providers, approved tools, agents and license. Agents are saved as token hashes, so existing agent tokens keep working after a restore. |
+| `backup [--out FILE] [--passphrase-file F]` | Write one encrypted file (AES-256-GCM, scrypt passphrase) holding your keys and their metadata, custom providers, approved tools, agents, license and team server link. Agents are saved as token hashes, so existing agent tokens keep working after a restore. |
 | `restore <file> [--overwrite] [--dry-run] [--passphrase-file F]` | Merge a backup into this machine's keychain or vault. Every item is validated and the key limit checked before anything is written; existing items are kept unless `--overwrite`, and nothing is ever deleted. |
 | `start [--port N]` | Run the proxy (loopback only). Logs JSON lines to stdout. |
+| `team join <https://server:port> [--ca FILE] [--stdin]` / `status` / `leave` | Team: link this LLLanyard to your team's shared proxy. Your keys here stay personal; requests you have no key for go to the team server with your own team token. |
 
 ## Using it with tools (APIs and MCP servers)
 
@@ -216,7 +217,7 @@ An *agent* is one AI tool or app you link in (Claude Code, Cursor, an SDK script
 | | Keys | Agent tokens | Where it runs |
 |---|---|---|---|
 | **Free** | 10 | 5 | This computer only |
-| **Pro** | 250 | 10 per user | Shared between one person's own devices (laptop, desktop, home server) |
+| **Pro** | 250 | 10 per user | Shared with up to 3 of one person's own devices (laptop, desktop, home server) |
 | **Team** | 500 | Unlimited | Shared on your network with the other members of your team |
 
 Pro and Team also add the usage dashboard. See [pricing](https://lllanyard.app/pricing). Lowering a limit never stops
@@ -258,17 +259,51 @@ run as your user can also run `lllanyard` directly; the MCP server is a safe *in
 
 ### Sharing across your devices (Pro) or with your team (Team)
 
-One computer (a small server, or an always-on workstation) holds the real keys. Every other device or teammate's tool
-gets its own agent token. With **Pro**, share it only between your own devices. To share it with other people, each
-of them needs a **Team** seat.
+One computer (a small server, or an always-on workstation) holds the real keys and shares its proxy:
 
 ```
 lllanyard serve --host 0.0.0.0 --port 3443 --tls-cert cert.pem --tls-key key.pem --allow-host keys.example.com
+```
+
+**Pro: your own devices, up to 3.** Pair each device once. Install LLLanyard on it (it stores no keys there), then:
+
+```
+lllanyard device add work-laptop                         # on the main computer: a one-time code, valid 10 minutes
+lllanyard device join https://keys.example.com:3443      # on the laptop: asks for the code (--ca ca.pem for a private CA)
+```
+
+On the paired device:
+
+```
+lllanyard exec --remote pwsh -File ./Deploy-App.ps1      # run a script or tool with your keys from the main computer
+lllanyard relay                                          # a fixed local address for apps such as an editor or Claude Desktop
+```
+
+`exec --remote` works like `exec`: it reads the script for the variable names of your keys (or takes `--keys github`),
+then asks the main computer for just those keys. They go into that one command's environment, in memory, with any that
+appear in its output redacted, and are gone when it ends: nothing is saved or cached on the device, so the next run asks
+again. The main computer logs each one (`device-keys`: which device, which keys, which command). As with `exec`, a
+script that copies a key somewhere itself can't be stopped.
+
+A device paired with `lllanyard device add tablet --no-keys` never receives a key. Its tools go through the main
+computer's proxy instead, using SDK base URLs (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`) and `LLLANYARD_<PROVIDER>_URL`
+(for example `LLLANYARD_GITHUB_URL`). `lllanyard relay` always works this way, for long-running apps.
+
+Each device's token works only on the computer it was paired on: LLLanyard on the device sends a hash of its machine ID
+(the hardware UUID on a Mac, the MachineGuid on Windows, `/etc/machine-id` on Linux) with each request, and a copied token
+is refused on any other computer. `lllanyard device list` shows them; `lllanyard device remove work-laptop` frees a place.
+On Pro, agent tokens work on the main computer only. The machine ID is reported by the device, so this stops a token
+being passed around, not someone determined to fake it.
+
+**Team: your team, no device limit.** Each teammate's tool gets its own agent token, and points at
+`https://keys.example.com:3443/openai/v1` with that token as the API key:
+
+```
 lllanyard agent create alice-laptop --client acme --providers openai --expires 90d
 ```
 
-Each device or teammate points their tools at `https://keys.example.com:3443/openai/v1` and uses their token as the API
-key. They can *use* a key but never read it. Revoking a token cuts that tool off within ~10 seconds.
+Devices and teammates can *use* a key but never read it. Revoking a token or removing a device cuts it off within ~10
+seconds.
 
 | Safeguard | |
 |---|---|
@@ -278,10 +313,33 @@ key. They can *use* a key but never read it. Revoking a token cuts that tool off
 | Per-person scope | Each token is limited to a client (`--client`), optionally to providers, and can expire (`--expires`) |
 | Audit trail | Every request is logged with agent name and caller address; `lllanyard usage` breaks it down by agent and client |
 | Rate limits + kill switch | Per token, as before |
-| Agent tokens | Free: 5. Pro: 10 per user. Team: unlimited |
+| Limits | Agent tokens: Free 5, Pro 10 per user, Team unlimited. Paired devices: Pro 3, Team unlimited |
 
 Put it behind a VPN (Tailscale, WireGuard) or a firewall if you can; the lockout and TLS are a second layer, not a reason to
 expose it to the whole internet. `X-Forwarded-For` is deliberately ignored, so a reverse proxy in front shows as one address.
+
+### Personal keys alongside the team's (Team)
+
+Team members can keep their own keys as well as using the team's. Each member runs their own LLLanyard, which holds
+their personal keys, and links it to the team server with their own token from the team admin:
+
+```
+lllanyard team join https://keys.example.com:3443        # prompts for your team token (or --stdin); --ca ca.pem for a private CA
+lllanyard team status                                    # checks the link and lists which keys are personal
+```
+
+```
+your laptop ─┐
+your desktop ┼─► your LLLanyard (your keys) ──► team server (the team's keys)
+your server ─┘     on one of your machines        on your network
+```
+
+Your tools point at your own LLLanyard as usual. A request for a key you hold uses yours, and never reaches the team
+server. A request for anything else goes on to the team server, which adds the team's key. The team server sees your
+team token, not your devices' tokens, so its usage log and revocation work per member. Your devices' own token limits
+(`--providers`) apply first. Your personal keys never leave your machine, and the team's keys never come to it. Sharing
+your LLLanyard between your own devices works as on Pro (`lllanyard serve` and `lllanyard device add`). `lllanyard team leave` removes the link.
+The link is only used while a Team license is active, and the team server must be LLLanyard 0.1.4 or later.
 
 **Headless servers and containers: the encrypted file vault.** The OS keychain needs a desktop login, so on a server use
 `LLLANYARD_BACKEND=file`. Everything (keys, agents, tools, license) then lives in one encrypted file,

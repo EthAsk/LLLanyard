@@ -54,3 +54,17 @@ test('parseSince', () => {
   assert.equal(parseSince('7d', 1e12), 1e12 - 7 * 86400_000);
   assert.throws(() => parseSince('soon'));
 });
+
+test('keys sent to paired devices are summarised by device, command and keys', () => {
+  const since = Date.parse('2026-11-01T00:00:00Z');
+  const s = summarize([
+    { ts: '2026-11-01T10:00:00Z', event: 'device-keys', agent: 'device:laptop', tool: 'pwsh Deploy.ps1', keys: ['GITHUB_TOKEN'] },
+    { ts: '2026-11-01T11:00:00Z', event: 'device-keys', agent: 'device:laptop', tool: 'pwsh Deploy.ps1', keys: ['GITHUB_TOKEN'] },
+    { ts: '2026-11-01T09:00:00Z', event: 'device-keys', agent: 'device:desktop', tool: 'python3 sync.py', keys: [] },
+  ], since, Date.parse('2026-11-02T00:00:00Z'));
+  assert.deepEqual(s.deviceKeys, [
+    { device: 'laptop', tool: 'pwsh Deploy.ps1', keys: ['GITHUB_TOKEN'], count: 2, last: '2026-11-01T11:00:00Z' },
+    { device: 'desktop', tool: 'python3 sync.py', keys: [], count: 1, last: '2026-11-01T09:00:00Z' },
+  ]);
+  assert.equal(s.requests, 0, 'not counted as proxy requests');
+});

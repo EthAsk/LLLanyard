@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import {
-  AgentStore, APP_NAME, createMcpHandler, serveMcpStdio, allProviders, FileBackend, LicenseStore, refreshDue, refreshLicense, MIN_PASSPHRASE, backendKind, defaultBackend, setVaultPassphrase, vaultPassphrase, createUsageLog, parseSince, readUsage, renderDashboard, summarize, usageLogPath, type Row, BUILTIN_PROVIDERS, DEFAULT_PORT, KeyringBackend, KeyringStore, ProviderStore, ToolStore,
+  AgentStore, APP_NAME, TeamStore, DeviceStore, RemoteStore, DEVICE_LIMITS, machineId, normaliseTeamUrl, createMcpHandler, serveMcpStdio, allProviders, FileBackend, LicenseStore, refreshDue, refreshLicense, MIN_PASSPHRASE, backendKind, defaultBackend, setVaultPassphrase, vaultPassphrase, createUsageLog, parseSince, readUsage, renderDashboard, summarize, usageLogPath, type Row, BUILTIN_PROVIDERS, DEFAULT_PORT, KeyringBackend, KeyringStore, ProviderStore, ToolStore,
   defaultRoots, parseKeyRef, redactFile, rotationStatus, runTool, sandboxSelfTest, scan, type AuthSpec, type Finding,
   createBackup, describeItem, readBackup, restoreBackup, pinScript, findCommand, pinFiles, bindingsForKeys, bindingsForAllKeys, scriptOf, neededEnv, type RunResult, type ToolDef,
   resolveScriptDirs, planScriptRun, describePlan, confirmDialog, type Launch,
   stableNodePath, withClaudeDesktopClosed, claudeDesktopRunning, canRestartClaudeDesktop, claudeDesktopStatus, connectClaudeDesktop, disconnectClaudeDesktop, claudeCodeStatus, connectClaudeCode, disconnectClaudeCode,
 } from '@lllanyard/core';
-import { startEgressProxy, startProxy } from '@lllanyard/proxy';
+import { relayEnv, startEgressProxy, startProxy, startRelay } from '@lllanyard/proxy';
 import { openBrowser, startUi } from '@lllanyard/ui';
 
-const BOOL = new Set(['run', 'remove', 'restart', 'clear', 'stdin', 'allow-argv', 'import', 'redact', 'apply', 'json', 'help', 'allow-local', 'no-scrub', 'no-resolve', 'kill-on-leak', 'inherit-env', 'sandbox', 'no-open', 'print-url', 'overwrite', 'dry-run', 'allow-args']);
+const BOOL = new Set(['no-keys', 'run', 'remove', 'restart', 'clear', 'stdin', 'allow-argv', 'import', 'redact', 'apply', 'json', 'help', 'allow-local', 'no-scrub', 'no-resolve', 'kill-on-leak', 'inherit-env', 'sandbox', 'no-open', 'print-url', 'overwrite', 'dry-run', 'allow-args']);
 const MULTI = new Set(['scripts-dir', 'pin', 'env', 'allow-host', 'pass-env', 'share-ro', 'share-rw']);
 
 function parse(argv: string[]) {
@@ -92,6 +93,7 @@ Backup
                                                     merge a backup in; existing items are kept unless --overwrite
 
 Run
+  --version                                         show the installed version
   start [--port N]                                 start the local proxy (127.0.0.1 only)
   usage [--since 7d] [--json]                       request counts, errors, latency by provider/agent/client
   dashboard [--since 30d] [--out file]              visual HTML dashboard (Pro)
@@ -103,9 +105,102 @@ Run
                                                     with keys injected and output redacted (default time limit 600s)
                                                     --scripts-dir DIR (repeat) also lets it run any script in DIR,
                                                     after you click Run in a dialog that shows the script and its keys
-  serve --host H --port P --tls-cert F --tls-key F --allow-host NAME   share the proxy with your team (Pro; keys stay in this keychain)
+  serve --host H --port P --tls-cert F --tls-key F --allow-host NAME   share the proxy: your own devices (Pro) or your team (Team)
+  team join <https://server:port> [--ca FILE] [--stdin]   Team: keep personal keys here, use the team server for the rest
+  team status | team leave                          check or remove the link to the team server
+
+Your own devices (Pro: up to 3; the keys stay on the main computer)
+  device add <name> [--no-keys]                     on the main computer: a one-time pairing code (10 minutes);
+                                                    --no-keys: the device only goes through the proxy, never gets a key
+  device list | device remove <name>                the paired devices; removing one frees its place
+  device join <https://main:port> [--ca FILE]       on the other device: pair it (asks for the code)
+  device status | device leave                      on the other device: check or remove its pairing
+  exec --remote <command> [args...]                 on a paired device: run a command with the keys it needs, fetched from
+                                                    the main computer for that run only (in memory, never saved)
+  relay [--port N]                                  on a paired device: a local address for AI tools and apps, e.g. an editor
   doctor                                            check OS keychain and sandbox access
 `;
+
+/** Asks the team server who this token belongs to (no key is used). */
+function teamWhoami(link: { url: string; token: string; ca?: string }): Promise<{ name: string; providers: string[] | null }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL('/_lllanyard/whoami', link.url);
+    const req = https.request(u, { method: 'GET', headers: { authorization: `Bearer ${link.token}` }, timeout: 10_000, minVersion: 'TLSv1.2', ...(link.ca ? { ca: link.ca } : {}) }, (res) => {
+      let b = '';
+      res.on('data', (d) => (b += d));
+      res.on('end', () => {
+        if (res.statusCode === 200) { try { return resolve(JSON.parse(b)); } catch { /* fall through */ } }
+        reject(new Error(res.statusCode === 401 ? 'The team server did not accept that token.'
+          : res.statusCode === 403 ? 'The team server refused this address. Its --allow-host must include ' + u.hostname + '.'
+          : res.statusCode === 429 ? 'Too many wrong tokens from this address: the team server has locked it out for 15 minutes.'
+          : `The team server answered ${res.statusCode}. Is it running LLLanyard 0.1.4 or later?`));
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('No answer from the team server within 10 seconds.')));
+    req.on('error', (e) => reject(new Error(`Could not reach the team server: ${e.message}`)));
+    req.end();
+  });
+}
+
+/** Asks the main computer who this device is, and the variable names of its keys. */
+function deviceWhoami(link: { url: string; token: string; ca?: string }, machine: string): Promise<{ name: string; vars: Record<string, string>; keys: boolean }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL('/_lllanyard/whoami', link.url);
+    const req = https.request(u, { method: 'GET', headers: { authorization: `Bearer ${link.token}`, 'x-lllanyard-machine': machine }, timeout: 10_000, minVersion: 'TLSv1.2', ...(link.ca ? { ca: link.ca } : {}) }, (res) => {
+      let b = '';
+      res.on('data', (d) => (b += d));
+      res.on('end', () => {
+        if (res.statusCode === 200) { try { const v = JSON.parse(b); return resolve({ name: v.name, vars: v.vars ?? {}, keys: v.keys === true }); } catch { /* fall through */ } }
+        let msg = ''; try { msg = JSON.parse(b).error ?? ''; } catch { /* */ }
+        reject(new Error(res.statusCode === 401 ? (msg || 'The main computer did not accept this device. It may have been removed: pair it again with lllanyard device join.')
+          : res.statusCode === 403 ? 'The main computer refused this address. Its --allow-host must include ' + u.hostname + '.'
+          : `The main computer answered ${res.statusCode}${msg ? `: ${msg}` : ''}.`));
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('No answer from the main computer within 10 seconds.')));
+    req.on('error', (e) => reject(new Error(`Could not reach the main computer: ${e.message}`)));
+    req.end();
+  });
+}
+
+/** exec --remote: the keys for one run, by variable name, from the main computer. Never written anywhere. */
+function fetchDeviceKeys(link: { url: string; token: string; ca?: string }, machine: string, vars: string[], tool: string): Promise<Record<string, string>> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ vars, tool });
+    const req = https.request(new URL('/_lllanyard/keys', link.url), { method: 'POST', headers: { authorization: `Bearer ${link.token}`, 'x-lllanyard-machine': machine, 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: 10_000, minVersion: 'TLSv1.2', ...(link.ca ? { ca: link.ca } : {}) }, (res) => {
+      let b = '';
+      res.on('data', (d) => (b += d));
+      res.on('end', () => {
+        let v: any = {}; try { v = JSON.parse(b); } catch { /* */ }
+        if (res.statusCode === 200 && v.keys && typeof v.keys === 'object') return resolve(v.keys);
+        reject(new Error(v.error ?? `The main computer answered ${res.statusCode}.`));
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('No answer from the main computer within 10 seconds.')));
+    req.on('error', (e) => reject(new Error(`Could not reach the main computer: ${e.message}`)));
+    req.end(body);
+  });
+}
+
+function pairDevice(url: string, code: string, machine: string, ca?: string): Promise<{ name: string; token: string }> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ code, machine });
+    const req = https.request(new URL('/_lllanyard/pair', url), { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: 10_000, minVersion: 'TLSv1.2', ...(ca ? { ca } : {}) }, (res) => {
+      let b = '';
+      res.on('data', (d) => (b += d));
+      res.on('end', () => {
+        let v: any = {}; try { v = JSON.parse(b); } catch { /* */ }
+        if (res.statusCode === 200 && typeof v.token === 'string') return resolve(v);
+        reject(new Error(res.statusCode === 404 ? 'The main computer does not take devices. Is it running lllanyard serve, version 0.1.4 or later?'
+          : res.statusCode === 429 ? 'Too many wrong codes from this address: the main computer has locked it out for 15 minutes.'
+          : v.error ?? `The main computer answered ${res.statusCode}.`));
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('No answer from the main computer within 10 seconds.')));
+    req.on('error', (e) => reject(new Error(`Could not reach the main computer: ${e.message}`)));
+    req.end(body);
+  });
+}
 
 async function readStdin(): Promise<string> {
   let s = '';
@@ -208,6 +303,10 @@ async function main() {
   const rest = dd >= 0 ? all.slice(0, dd) : all;
   const tail = dd >= 0 ? all.slice(dd + 1) : [];
   const { pos, flags, multi } = parse(rest);
+  if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+    const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string };
+    return out(`${APP_NAME} ${pkg.version}`);
+  }
   if (!cmd || cmd === 'help' || (flags.help && cmd !== 'exec')) return out(HELP);
 
   // File vault: get the passphrase (from a file/env if configured, else a hidden prompt on a terminal).
@@ -371,14 +470,18 @@ async function main() {
       return fail('Usage: lllanyard tool add|list|remove');
     }
     case 'exec': {
-      // Everything after "exec" (and an optional "--keys a,b") is the command, passed through untouched.
+      // Everything after "exec" (and optional "--remote" / "--keys a,b") is the command, passed through untouched.
       let argv = process.argv.slice(3);
       let only: string[] | undefined;
-      if (argv[0] === '--keys') { only = (argv[1] ?? '').split(',').map((x) => x.trim()).filter(Boolean); argv = argv.slice(2); }
+      let remote = false;
+      for (;;) {
+        if (argv[0] === '--remote') { remote = true; argv = argv.slice(1); continue; }
+        if (argv[0] === '--keys') { only = (argv[1] ?? '').split(',').map((x) => x.trim()).filter(Boolean); argv = argv.slice(2); continue; }
+        break;
+      }
       if (argv[0] === '--') argv = argv.slice(1);
       const [command, ...args] = argv;
-      if (!command) fail('Usage: lllanyard exec <command> [args...]   e.g.  lllanyard exec pwsh -File ./Deploy-App.ps1 -DryRun\n       lllanyard exec --keys github,sendgrid -- <command> [args...]   to name the keys yourself');
-      const keys = store();
+      if (!command) fail('Usage: lllanyard exec <command> [args...]   e.g.  lllanyard exec pwsh -File ./Deploy-App.ps1 -DryRun\n       lllanyard exec --keys github,sendgrid -- <command> [args...]   to name the keys yourself\n       lllanyard exec --remote <command> [args...]   on a paired device: keys from your main computer');
       // The script being run: the file after an interpreter (python3 x.py, pwsh -File x.ps1), or the command itself.
       let script: string | null = null;
       try { script = scriptOf({ command, args: args.map((a) => (a.startsWith('-') ? a : path.resolve(a))) }); } catch { /* not a plain script run */ }
@@ -386,17 +489,58 @@ async function main() {
       if (!script && /[\\/]/.test(command)) {
         try { if (statSync(command).isFile() && !readFileSync(command).subarray(0, 4096).includes(0)) script = path.resolve(command); } catch { /* not a file */ }
       }
-      let env: Record<string, string>;
-      if (only) env = bindingsForKeys(only, keys);
-      else {
-        if (!script) fail(`Can't tell which keys "${command}" needs (it isn't a script file). Name them: lllanyard exec --keys github,sendgrid -- ${command} ...`);
-        const all = bindingsForAllKeys(keys);
+      const what = path.basename(command) + (script && path.resolve(command) !== script ? ` ${path.basename(script)}` : '');
+      /** VAR → provider[:label] for the keys this command needs, out of `all`. */
+      const pick = (all: Record<string, string>, named: (providers: string[]) => Record<string, string>): Record<string, string> => {
+        if (only) return named(only);
+        if (!script) fail(`Can't tell which keys "${command}" needs (it isn't a script file). Name them: lllanyard exec ${remote ? '--remote ' : ''}--keys github,sendgrid -- ${command} ...`);
         const { needed, files } = neededEnv(script!, Object.keys(all));
-        env = Object.fromEntries(needed.map((n) => [n, all[n]!]));
         const shown = files.map((f) => path.basename(f));
         process.stderr.write(`lllanyard: giving ${needed.length ? needed.join(', ') : 'no keys'} (checked ${shown.slice(0, 4).join(', ')}${shown.length > 4 ? ` +${shown.length - 4} more` : ''})\n`);
+        return Object.fromEntries(needed.map((n) => [n, all[n]!]));
+      };
+
+      if (remote) {
+        // A paired device. No keys are stored here: the main computer sends the ones this run needs, they live only in
+        // this command's environment (in memory, output redacted), and are gone when it ends. Nothing is cached.
+        const link = new RemoteStore().get() ?? fail('This computer is not paired with your main computer. See: lllanyard device join');
+        const machine = machineId();
+        const who = await deviceWhoami(link, machine).catch((e: Error) => fail(e.message));
+        const host = new URL(link.url).hostname;
+        if (who.keys) {
+          const env = pick(who.vars, (providers) => {
+            const want = new Set(providers.map((p) => p.toLowerCase()));
+            const m = Object.fromEntries(Object.entries(who.vars).filter(([, ref]) => want.has(ref.toLowerCase()) || want.has(ref.split(':')[0]!.toLowerCase())));
+            const missing = [...want].filter((p) => !Object.values(m).some((ref) => ref.toLowerCase() === p || ref.split(':')[0]!.toLowerCase() === p));
+            if (missing.length) fail(`Your main computer has no key with a variable name for ${missing.join(', ')}. On the main computer: lllanyard env <provider> VAR`);
+            return m;
+          });
+          let leased: Record<string, string> = Object.keys(env).length ? await fetchDeviceKeys(link, machine, Object.keys(env), what).catch((e: Error) => fail(e.message)) : {};
+          const got = Object.keys(leased);
+          const gone = Object.keys(env).filter((v) => !got.includes(v));
+          if (gone.length) fail(`Your main computer did not send ${gone.join(', ')} (the key may have been removed there).`);
+          process.stderr.write(`lllanyard: ${got.length ? `${got.join(', ')} from ${host}, for this run only` : `no keys needed from ${host}`}\n`);
+          const byRef = new Map(Object.entries(env).map(([v, ref]) => [ref, leased[v]!]));
+          try {
+            process.exitCode = await runTool({ command, args, env, scrub: true, inheritEnv: true }, {
+              store: { get: (p, l) => byRef.get(l === 'default' ? p : `${p}:${l}`) ?? byRef.get(`${p}:${l}`) ?? null },
+            });
+          } finally { byRef.clear(); leased = {}; }
+          return;
+        }
+        // Paired with --no-keys: tools reach the main computer's proxy through a relay for this run only.
+        const localToken = 'lly_run_' + (await import('node:crypto')).randomBytes(24).toString('base64url');
+        const relay = await startRelay({ url: link.url, deviceToken: link.token, machine, ca: link.ca, localToken });
+        process.stderr.write(`lllanyard: through the proxy on ${host} (this device does not receive keys); scripts must use LLLANYARD_<PROVIDER>_URL\n`);
+        try {
+          const env = { ...process.env, ...relayEnv(relay.base, localToken, who.vars) };
+          process.exitCode = await runTool({ command, args, env: {}, scrub: true, inheritEnv: true }, { store: { get: () => null }, env });
+        } finally { relay.close(); }
+        return;
       }
-      const what = path.basename(command) + (script && path.resolve(command) !== script ? ` ${path.basename(script)}` : '');
+
+      const keys = store();
+      const env = only ? bindingsForKeys(only, keys) : pick(bindingsForAllKeys(keys), () => ({}));
       createUsageLog().write({ ts: new Date().toISOString(), event: 'exec', tool: what, cwd: process.cwd(), keys: Object.keys(env) });
       process.exitCode = await runTool({ command, args, env, scrub: true, inheritEnv: true }, { store: keys });
       return;
@@ -496,9 +640,13 @@ async function main() {
       const port = str(flags.port) ? Number(str(flags.port)) : 3443;
       const s = await startProxy({ port, host, tls, allowedHosts: allowed });
       out(`${APP_NAME} shared proxy on ${tls ? 'https' : 'http'}://${host}:${s.port}  (hosts: ${allowed?.join(', ') ?? 'loopback'}). Keys stay in this computer's keychain.`);
-      out(`Other devices use: base URL https://${allowed?.[0] ?? host}:${s.port}/openai/v1 with their own agent token as the API key.`);
-      out('Create a token per AI tool: lllanyard agent create laptop-claude-code --client acme --expires 90d');
-      if (new LicenseStore().status().tier === 'pro') out('Pro covers your own devices. To share this proxy with other people, they need Team seats.');
+      if (new LicenseStore().status().tier === 'pro') {
+        out('Pro: your own devices, up to 3. Pair each one: lllanyard device add <name>, then on the device: lllanyard device join');
+        out('Agent tokens made here work on this computer only. To share with other people, they need Team seats.');
+      } else {
+        out(`Other devices use: base URL https://${allowed?.[0] ?? host}:${s.port}/openai/v1 with their own agent token as the API key.`);
+        out('Create a token per AI tool: lllanyard agent create laptop-claude-code --client acme --expires 90d');
+      }
       process.on('SIGINT', () => { s.close(); process.exit(0); });
       return;
     }
@@ -518,7 +666,9 @@ async function main() {
       for (const e of sum.egressDenied.slice(0, 10)) out(`  blocked egress: ${e.tool} -> ${e.host} x${e.count}`);
       if (sum.scriptRuns.length) out('\nScripts run with your keys (lllanyard exec)');
       for (const r of sum.scriptRuns) out(`  ${r.tool.padEnd(22).slice(0, 22)} ${String(r.count).padStart(5)}x  last ${r.last.slice(0, 16).replace('T', ' ')} UTC`);
-      if (!sum.requests && !sum.scriptRuns.length) out('\nNo requests recorded yet. Start the proxy with: lllanyard start');
+      if (sum.deviceKeys.length) out('\nKeys sent to your paired devices (exec --remote)');
+      for (const r of sum.deviceKeys) out(`  ${r.device.padEnd(16).slice(0, 16)} ${(r.keys.join(', ') || 'none').padEnd(28).slice(0, 28)} ${r.tool.padEnd(22).slice(0, 22)} ${String(r.count).padStart(4)}x  last ${r.last.slice(0, 16).replace('T', ' ')} UTC`);
+      if (!sum.requests && !sum.scriptRuns.length && !sum.deviceKeys.length) out('\nNo requests recorded yet. Start the proxy with: lllanyard start');
       return out('\nVisual dashboard (Pro): lllanyard dashboard');
     }
     case 'dashboard': {
@@ -531,6 +681,103 @@ async function main() {
       mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
       writeFileSync(file, html, { mode: 0o600 });
       return out(`Dashboard written to ${file}. Open it in your browser (it is self-contained and makes no network requests).`);
+    }
+    case 'team': {
+      const sub = pos[0];
+      const teams = new TeamStore();
+      if (sub === 'join') {
+        if (new LicenseStore().status().tier !== 'team') fail('Linking to a team server is a Team feature. Activate your Team license first: lllanyard license activate');
+        const url = normaliseTeamUrl(pos[1] ?? fail('Usage: lllanyard team join https://keys.example.com:3443 [--ca ca.pem] [--stdin]'));
+        const caFile = str(flags.ca);
+        const ca = caFile ? readFileSync(caFile, 'utf8') : undefined;
+        const token = (await readSecret('Your team token from the team admin (lly_…, input hidden): ', Boolean(flags.stdin))).trim();
+        const who = await teamWhoami({ url, token, ca }).catch((e: Error) => fail(e.message));
+        teams.set({ url, token, ca });
+        out(`Linked to ${url} as "${who.name}"${who.providers ? ` (providers: ${who.providers.join(', ')})` : ''}.`);
+        out('Keys you add here stay personal and never leave this computer. Anything you have no key for here goes to the team server.');
+        return out('Restart the proxy (lllanyard start, serve or ui) if it is running; it also picks this up within 10 seconds.');
+      }
+      if (sub === 'leave') return out(teams.remove() ? 'Link to the team server removed. Only your personal keys are used now.' : 'Not linked to a team server.');
+      if (sub === 'status' || sub === undefined) {
+        const link = teams.get();
+        if (!link) return out('Not linked to a team server. Team members: lllanyard team join https://keys.example.com:3443');
+        out(`Team server: ${link.url} (linked ${link.joinedAt.slice(0, 10)}${link.ca ? ', private CA' : ''}).`);
+        if (new LicenseStore().status().tier !== 'team') out('Not in use: this computer has no active Team license.');
+        const who = await teamWhoami(link).catch((e: Error) => { process.exitCode = 1; out(`Problem: ${e.message}`); return null; });
+        if (who) out(`The team server knows this computer as "${who.name}"${who.providers ? ` (providers: ${who.providers.join(', ')})` : ''}.`);
+        return out('Personal keys (here): ' + (store().list().map((k) => k.label === 'default' ? k.provider : `${k.provider}:${k.label}`).join(', ') || 'none') + '. Everything else goes to the team server.');
+      }
+      return fail('Usage: lllanyard team join <url> | team status | team leave');
+    }
+    case 'device': {
+      const [sub, arg] = pos;
+      const devices = new DeviceStore();
+      const tier = new LicenseStore().status().tier;
+      const limit = DEVICE_LIMITS[tier];
+      if (sub === 'add') {
+        if (!arg) fail('Usage: lllanyard device add <name>   e.g. lllanyard device add work-laptop');
+        const { code, expires } = devices.invite(arg, limit, { noKeys: Boolean(flags['no-keys']) });
+        out(`Pairing code for "${arg.toLowerCase()}" (works once, until ${expires.slice(11, 16)} UTC):\n\n  ${code}\n`);
+        out('On that device, with LLLanyard installed, run:\n\n  lllanyard device join https://<this computer>:<port>\n');
+        out(flags['no-keys'] ? 'This computer must be running lllanyard serve. The device will only go through this proxy and never receives a key.'
+          : 'This computer must be running lllanyard serve. Nothing is copied to the device: lllanyard exec --remote there gets the keys a command needs for that run only.');
+        return out(Number.isFinite(limit) ? `Devices: ${devices.used()} of ${limit} (including this code until it is used or runs out).` : '');
+      }
+      if (sub === 'list' || sub === undefined) {
+        const l = devices.list();
+        if (!l.length) out('No devices paired. Pair one: lllanyard device add <name>');
+        for (const d of l) out(`${d.name.padEnd(24)} ${d.pending ? `waiting for its code (until ${d.expires!.slice(11, 16)} UTC)` : `paired ${day(d.pairedAt)}`}${d.keys ? '' : '  (proxy only, no keys)'}`);
+        if (Number.isFinite(limit) && limit > 0) out(`\n${l.length} of ${limit} devices${l.length > limit ? ` (only the first ${limit} paired work on your plan)` : ''}.`);
+        const remote = new RemoteStore().get();
+        if (remote) out(`\nThis computer is itself paired with ${remote.url} as "${remote.name}".`);
+        return;
+      }
+      if (sub === 'remove') {
+        if (!arg) fail('Usage: lllanyard device remove <name>');
+        return out(devices.remove(arg) ? `Removed ${arg}. It stops working within about 10 seconds; its place is free.` : 'No such device.');
+      }
+      if (sub === 'join') {
+        const url = normaliseTeamUrl(arg ?? fail('Usage: lllanyard device join https://main-computer:3443 [--ca ca.pem]'));
+        const caFile = str(flags.ca);
+        const ca = caFile ? readFileSync(caFile, 'utf8') : undefined;
+        const code = (await readSecret('Pairing code from the main computer (lllanyard device add): ', Boolean(flags.stdin))).trim();
+        const machine = machineId();
+        const r = await pairDevice(url, code, machine, ca).catch((e: Error) => fail(e.message));
+        const remote = new RemoteStore();
+        remote.set({ url, token: r.token, name: r.name, ...(ca ? { ca } : {}) });
+        const who = await deviceWhoami({ url, token: r.token, ca }, machine).catch(() => ({ name: r.name, vars: {} as Record<string, string> }));
+        out(`Paired with ${url} as "${r.name}". No API keys are stored on this computer.`);
+        if (Object.keys(who.vars).length) out(`Keys you can use: ${Object.keys(who.vars).join(', ')}.`);
+        out('\nRun a script or tool with them:     lllanyard exec --remote <command> [args...]');
+        return out('Give an app a fixed local address: lllanyard relay');
+      }
+      if (sub === 'status') {
+        const link = new RemoteStore().get();
+        if (!link) return out('This computer is not paired with a main computer. See: lllanyard device join');
+        out(`Paired with ${link.url} as "${link.name}" (since ${day(link.pairedAt)}${link.ca ? ', private CA' : ''}).`);
+        const who = await deviceWhoami(link, machineId()).catch((e: Error) => { process.exitCode = 1; out(`Problem: ${e.message}`); return null; });
+        if (who) out(`Working. Keys you can use: ${Object.keys(who.vars).join(', ') || 'none with a variable name yet (set one on the main computer: lllanyard env <provider> VAR)'}.`);
+        return;
+      }
+      if (sub === 'leave') return out(new RemoteStore().remove() ? 'Pairing removed from this computer. Also free its place on the main computer: lllanyard device remove <name>' : 'This computer is not paired.');
+      return fail('Usage: lllanyard device add|list|remove (main computer)  or  device join|status|leave (other device)');
+    }
+    case 'relay': {
+      const remote = new RemoteStore();
+      const link = remote.get() ?? fail('This computer is not paired with your main computer. See: lllanyard device join');
+      const machine = machineId();
+      const who = await deviceWhoami(link, machine).catch((e: Error) => fail(e.message));
+      const localToken = remote.relayToken();
+      const port = str(flags.port) ? Number(str(flags.port)) : DEFAULT_PORT;
+      if (!Number.isInteger(port) || port < 1 || port > 65535) fail('Invalid port');
+      const relay = await startRelay({ url: link.url, deviceToken: link.token, machine, ca: link.ca, localToken, port });
+      out(`${APP_NAME} relay on ${relay.base}: requests go to ${link.url} as "${who.name}". Ctrl+C to stop.\n`);
+      out('Point your AI tools and apps here. Use this as the API key (it works on this computer only, through the relay):\n');
+      out(`  ${localToken}\n`);
+      const env = relayEnv(relay.base, localToken, who.vars);
+      for (const [k, v] of Object.entries(env)) if (k.endsWith('_URL')) out(process.platform === 'win32' ? `  $env:${k}="${v}"` : `  export ${k}=${v}`);
+      process.on('SIGINT', () => { relay.close(); process.exit(0); });
+      return;
     }
     case 'license': {
       const [sub] = pos;

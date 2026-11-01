@@ -16,3 +16,5 @@ export * from './backup.js';
 export * from './script-file.js';
 export * from './integrations.js';
 export * from './claude-app.js';
+export * from './team.js';
+export * from './devices.js';

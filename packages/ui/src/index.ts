@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  AgentStore, FREE_LIMITS, KeyringStore, LicenseStore, ProviderStore, StoreError, allProviders, askLocalModel, assertLocalEndpoint, backendKind,
+  AgentStore, TeamStore, FREE_LIMITS, KeyringStore, LicenseStore, ProviderStore, StoreError, allProviders, askLocalModel, assertLocalEndpoint, backendKind,
   buildFacts, defaultBackend, readUsage, rotationStatus, ruleBasedReview, sandboxSelfTest, summarize, usageLogPath, DEFAULT_ASSISTANT,
   type AssistantConfig, type Launch, withClaudeDesktopClosed, claudeDesktopRunning, canRestartClaudeDesktop, claudeCodeStatus, claudeDesktopStatus, connectClaudeCode, connectClaudeDesktop, disconnectClaudeCode, disconnectClaudeDesktop, ToolStore, createBackup, describeItem, findCommand, pinScript, pinFiles, bindingsForKeys, readBackup, restoreBackup,
 } from '@lllanyard/core';
@@ -42,6 +42,8 @@ export function realDeps(opts: { proxyPort: number; launch?: Launch }): UiDeps {
         })),
         license: { tier: st.tier, payload: st.payload ? { seats: st.payload.seats, exp: st.payload.exp } : undefined, problem: st.problem },
         limits: { maxKeys: lic.limits().maxKeys, maxAgents: lic.maxAgents() },
+        // Where requests without a personal key go (never the token itself).
+        team: ((t) => (t ? { url: t.url, joinedAt: t.joinedAt } : null))(new TeamStore().get()),
         usage: usage(7),
         proxy: { running: Boolean(proxy), port: proxy?.port ?? opts.proxyPort },
         backend: backendKind(),

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  AgentStore, collectItems, createBackup, KeyringStore, MemoryBackend, ProviderStore, readBackup, restoreBackup, StoreError, ToolStore,
+  AgentStore, collectItems, createBackup, describeItem, KeyringStore, MemoryBackend, ProviderStore, readBackup, restoreBackup, StoreError, TeamStore, ToolStore,
 } from '../src/index.js';
 
 const PASS = 'correct horse battery staple';
@@ -105,4 +105,24 @@ test('restore: invalid or unknown items are skipped and reported, valid ones sti
   assert.equal(r.added.length, 5);
   assert.equal(target.get('provider:bad'), null);
   assert.equal(target.get('key:evil:default'), null);
+});
+
+test('backup: a team member gets their team server link back', () => {
+  const { b } = populated();
+  new TeamStore(b).set({ url: 'https://keys.example.com:3443', token: 'lly_' + 'T'.repeat(43) });
+  const { text, items } = createBackup(PASS, b);
+  assert.equal(items.length, 6);
+  assert.ok(items.some((i) => describeItem(i) === 'team server link'));
+  assert.ok(!text.includes('keys.example.com'), 'the link is encrypted like everything else');
+
+  const fresh = new MemoryBackend();
+  restoreBackup(readBackup(text, PASS), fresh);
+  assert.deepEqual(new TeamStore(fresh).get(), new TeamStore(b).get());
+
+  // An edited link is refused, not restored.
+  const bad = readBackup(text, PASS);
+  const team = bad.items.find((i) => i.kind === 'team')!;
+  team.records['__team__'] = JSON.stringify({ url: 'http://evil.example', token: 'lly_' + 'T'.repeat(43) });
+  const r = restoreBackup(bad, new MemoryBackend());
+  assert.deepEqual(r.invalid.map((i) => i.reason), ['team link is not valid']);
 });

@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
+import { normaliseTeamUrl } from './team.js';
 import { FREE_LIMITS } from './limits.js';
 import { validateProvider } from './providers.js';
 import { defaultBackend, type SecretBackend } from './storage/backend.js';
@@ -27,8 +28,9 @@ const KINDS = {
 } as const;
 type Kind = keyof typeof KINDS;
 const LICENSE = '__license__';
+const TEAM = '__team__';
 
-export interface BackupItem { kind: Kind | 'license'; id: string; records: Record<string, string> }
+export interface BackupItem { kind: Kind | 'license' | 'team'; id: string; records: Record<string, string> }
 export interface BackupPayload { v: 1; createdAt: string; items: BackupItem[] }
 interface Header { v: 1; app: typeof MAGIC; kdf: { n: number; r: number; p: number; salt: string }; nonce: string; ct: string; tag: string }
 
@@ -54,6 +56,8 @@ export function collectItems(backend: SecretBackend = defaultBackend()): BackupI
   }
   const lic = backend.get(LICENSE);
   if (lic) items.push({ kind: 'license', id: 'license', records: { [LICENSE]: lic } });
+  const team = backend.get(TEAM);
+  if (team) items.push({ kind: 'team', id: 'team', records: { [TEAM]: team } });
   return items;
 }
 
@@ -95,7 +99,7 @@ const parse = (s: string | undefined) => { try { return s === undefined ? undefi
 /** Throws a plain-language reason if an item from a backup is not something the stores would have written. */
 function checkItem(it: BackupItem): void {
   if (!it || typeof it.id !== 'string' || typeof it.records !== 'object' || it.records === null) throw new StoreError('malformed item');
-  const expected = it.kind === 'license' ? [LICENSE] : KINDS[it.kind as Kind]?.records(it.id);
+  const expected = it.kind === 'license' ? [LICENSE] : it.kind === 'team' ? [TEAM] : KINDS[it.kind as Kind]?.records(it.id);
   if (!expected) throw new StoreError(`unknown item type "${it.kind}"`);
   const got = Object.keys(it.records);
   if (got.length !== expected.length || !expected.every((a) => typeof it.records[a] === 'string')) throw new StoreError('unexpected records');
@@ -131,6 +135,13 @@ function checkItem(it: BackupItem): void {
     case 'license':
       if (!/^lly1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(r[LICENSE]!.trim())) throw new StoreError('license is not valid');
       return;
+    case 'team': {
+      const t = parse(r[TEAM]);
+      if (typeof t?.url !== 'string' || typeof t.token !== 'string' || !/^lly_[A-Za-z0-9_-]{16,}$/.test(t.token)) throw new StoreError('team link is not valid');
+      try { if (normaliseTeamUrl(t.url) !== t.url) throw new Error(); } catch { throw new StoreError('team link is not valid'); }
+      if (t.ca !== undefined && (typeof t.ca !== 'string' || !t.ca.includes('-----BEGIN CERTIFICATE-----'))) throw new StoreError('team link is not valid');
+      return;
+    }
   }
 }
 
@@ -154,10 +165,11 @@ export function restoreBackup(payload: BackupPayload, backend: SecretBackend = d
   const report: RestoreReport = { added: [], replaced: [], kept: [], invalid: [] };
   const current = Object.fromEntries((Object.keys(KINDS) as Kind[]).map((k) => [k, readIndex(backend, KINDS[k].index)])) as Record<Kind, string[]>;
   const hasLicense = backend.get(LICENSE) !== null;
+  const hasTeam = backend.get(TEAM) !== null;
 
   for (const it of payload.items) {
     try { checkItem(it); } catch (e) { report.invalid.push({ item: it, reason: (e as Error).message }); continue; }
-    const exists = it.kind === 'license' ? hasLicense : current[it.kind].includes(it.id);
+    const exists = it.kind === 'license' ? hasLicense : it.kind === 'team' ? hasTeam : current[it.kind].includes(it.id);
     if (!exists) report.added.push(it);
     else if (opts.overwrite) report.replaced.push(it);
     else report.kept.push(it);
@@ -179,4 +191,4 @@ export function restoreBackup(payload: BackupPayload, backend: SecretBackend = d
 }
 
 /** "key openai:default", "tool github-mcp", ... for listing what a backup contains. */
-export const describeItem = (it: BackupItem) => (it.kind === 'license' ? 'license' : `${it.kind} ${it.id}`);
+export const describeItem = (it: BackupItem) => (it.kind === 'license' || it.kind === 'team' ? (it.kind === 'team' ? 'team server link' : 'license') : `${it.kind} ${it.id}`);

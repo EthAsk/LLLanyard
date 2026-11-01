@@ -1,4 +1,5 @@
 - [ ] `npm test` passes
+- [ ] User-visible change: a line under `## Unreleased` in CHANGELOG.md
 - [ ] Security-relevant change has a test that fails without it
 - [ ] No keys, tokens or secrets in code, logs, tests or argv
 - [ ] I agree my contribution is under the project license (see CONTRIBUTING.md)

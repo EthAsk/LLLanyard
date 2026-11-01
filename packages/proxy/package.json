@@ -1,6 +1,6 @@
 {
   "name": "@lllanyard/proxy",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "LLLanyard proxy: swaps placeholder tokens for real API keys on the way out.",
   "type": "module",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
     "dist"
   ],
   "dependencies": {
-    "@lllanyard/core": "^0.1.3"
+    "@lllanyard/core": "^0.1.5"
   },
   "license": "BUSL-1.1",
   "engines": {

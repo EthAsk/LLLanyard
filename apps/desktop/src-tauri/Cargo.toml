@@ -1,6 +1,6 @@
 [package]
 name = "lllanyard-desktop"
-version = "0.1.3"
+version = "0.1.5"
 edition = "2021"
 license = "BUSL-1.1"
 
