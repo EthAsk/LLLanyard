@@ -22,6 +22,9 @@ export interface UiDeps {
   setup: (b: { app: 'claude-desktop' | 'claude-code'; remove: boolean; restart: boolean; scriptDirs: string[] }) => unknown; // connect an AI app
   backup: (passphrase: string) => { file: string; items: string[] }; // writes the encrypted file; returns where and what
   restore: (b: { text: string; passphrase: string; overwrite: boolean; dryRun: boolean }) => unknown;
+  addSsh: (b: { name: string; host: string; user: string; port: number; auth: 'key' | 'password'; secret: string; passphrase?: string }) => void;
+  generateSsh: (b: { name: string; host: string; user: string; port: number }) => { publicKey: string };
+  removeSsh: (name: string) => boolean;
   isUserError: (e: unknown) => boolean; // errors whose message is safe to show
   log?: (m: string) => void;
 }
@@ -97,6 +100,17 @@ export function createUiServer(deps: UiDeps, token = randomBytes(32).toString('b
           return json(res, 200, { ok: true });
         }
         case 'DELETE /api/keys': { const b = await readBody(); return json(res, 200, { ok: deps.removeKey(s(b.provider, 64), s(b.label ?? 'default', 64)) }); }
+        case 'POST /api/ssh': {
+          const b = await readBody();
+          deps.addSsh({ name: s(b.name, 64), host: s(b.host, 253), user: s(b.user, 64), port: optInt(b.port) ?? 22, auth: b.auth === 'password' ? 'password' : 'key',
+            secret: s(b.secret, 20_000), ...(b.passphrase ? { passphrase: s(b.passphrase, 1000) } : {}) });
+          return json(res, 200, { ok: true });
+        }
+        case 'POST /api/ssh/generate': {
+          const b = await readBody();
+          return json(res, 200, deps.generateSsh({ name: s(b.name, 64), host: s(b.host, 253), user: s(b.user, 64), port: optInt(b.port) ?? 22 })); // the public half only
+        }
+        case 'DELETE /api/ssh': { const b = await readBody(); return json(res, 200, { ok: deps.removeSsh(s(b.name, 64)) }); }
         case 'POST /api/agents': {
           const b = await readBody();
           const token = deps.createAgent({ name: s(b.name, 64), client: s(b.client ?? 'default', 64), providers: optList(b.providers), expiresDays: optInt(b.expiresDays) });

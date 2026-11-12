@@ -5,6 +5,20 @@ LLLanyard is 0.x, a new minor version (0.2.0) can change behaviour, and a patch 
 
 ## Unreleased
 
+## 0.2.0 (12 November 2026)
+
+- SSH logins. `lllanyard ssh add <name> --host HOST` stores a private key (pasted with no echo, or from a file) or a
+  password in the keychain, `lllanyard ssh generate` makes a new key there and prints its public half, and
+  `lllanyard ssh <name>` opens the session. The key is loaded into a throwaway ssh-agent for that session only (never
+  written to a file); a password is passed through ssh's askpass helper. `lllanyard ssh with <name> -- <command>` runs
+  scp, rsync, git or a script with the login available. SSH logins are included in backups and count towards the
+  key limit.
+- SSH tab in the app: add a login (paste a key, or a password), make a new key, copy its public half, remove a login.
+- Claude Desktop (`lllanyard mcp --run`) gets `list_ssh` and `ssh_run`. Claude can run one command on a stored login,
+  but only after you click Run in a dialog that shows the login and the exact command, every time. It never sees the
+  key or password, the output has them redacted, and each request is logged.
+- Large keys such as RSA 4096 are stored across several keychain entries, so they fit Windows' size limit.
+
 ## 0.1.5 (1 November 2026)
 
 - `lllanyard --version` shows the installed version.

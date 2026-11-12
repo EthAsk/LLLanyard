@@ -18,3 +18,4 @@ export * from './integrations.js';
 export * from './claude-app.js';
 export * from './team.js';
 export * from './devices.js';
+export * from './ssh.js';

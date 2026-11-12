@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn as spawnChild } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import https from 'node:https';
 import os from 'node:os';
@@ -10,12 +11,13 @@ import {
   defaultRoots, parseKeyRef, redactFile, rotationStatus, runTool, sandboxSelfTest, scan, type AuthSpec, type Finding,
   createBackup, describeItem, readBackup, restoreBackup, pinScript, findCommand, pinFiles, bindingsForKeys, bindingsForAllKeys, scriptOf, neededEnv, type RunResult, type ToolDef,
   resolveScriptDirs, planScriptRun, describePlan, confirmDialog, type Launch,
+  SshStore, assertSshName, normaliseKey, keyIsEncrypted, openSshSession, sshArgs, runSshCommand, describeSshRun, generateKey, publicKeyOf, minimalEnv, type SshEntry,
   stableNodePath, withClaudeDesktopClosed, claudeDesktopRunning, canRestartClaudeDesktop, claudeDesktopStatus, connectClaudeDesktop, disconnectClaudeDesktop, claudeCodeStatus, connectClaudeCode, disconnectClaudeCode,
 } from '@lllanyard/core';
 import { relayEnv, startEgressProxy, startProxy, startRelay } from '@lllanyard/proxy';
 import { openBrowser, startUi } from '@lllanyard/ui';
 
-const BOOL = new Set(['no-keys', 'run', 'remove', 'restart', 'clear', 'stdin', 'allow-argv', 'import', 'redact', 'apply', 'json', 'help', 'allow-local', 'no-scrub', 'no-resolve', 'kill-on-leak', 'inherit-env', 'sandbox', 'no-open', 'print-url', 'overwrite', 'dry-run', 'allow-args']);
+const BOOL = new Set(['no-keys', 'run', 'remove', 'restart', 'clear', 'stdin', 'allow-argv', 'import', 'redact', 'apply', 'json', 'help', 'allow-local', 'no-scrub', 'no-resolve', 'kill-on-leak', 'inherit-env', 'sandbox', 'no-open', 'print-url', 'overwrite', 'dry-run', 'allow-args', 'password']);
 const MULTI = new Set(['scripts-dir', 'pin', 'env', 'allow-host', 'pass-env', 'share-ro', 'share-rw']);
 
 function parse(argv: string[]) {
@@ -47,6 +49,13 @@ Keys
   remove <provider> [--label NAME]
   rotate <provider> [--label NAME]                  replace a key and reset its rotation clock
   status                                            rotation status for every key (exit 1 if any overdue)
+
+SSH logins
+  ssh add <name> --host [user@]HOST [--port N] [--key-file F | --password]   store a login (hidden prompt; a pasted key never shows)
+  ssh generate <name> --host [user@]HOST          make a new key in the keychain and print its public half for the server
+  ssh <name> [-- remote command]                  connect; the key lives in a throwaway ssh-agent for the session only
+  ssh with <name>[,<name>] -- <command...>        run scp, rsync, git, a script... with those keys available
+  ssh list | remove <name> | pubkey <name>
 
 Run scripts with your keys
   exec <command> [args...]                          run a script with the keys it uses, e.g.
@@ -100,7 +109,8 @@ Run
   license activate|status|refresh|remove            unlock Pro/Team with a signed license key; refresh fetches
                                                     the renewed key (done for you at start-up in the last week)
   ui [--no-open]                                    desktop-style window in your browser: keys, agents, usage, rotation assistant
-  mcp [--client NAME] [--run [--timeout SECS]]     MCP server for Claude Desktop etc.: key status, never shows keys.
+  mcp [--client NAME] [--run [--timeout SECS]]     MCP server for Claude Desktop etc.: key status, never shows keys. With --run it can also run
+                                                    one command on a stored SSH login, after you click Run in a dialog each time.
                                                     --run also lets it run your approved tools (lllanyard tool add) by name,
                                                     with keys injected and output redacted (default time limit 600s)
                                                     --scripts-dir DIR (repeat) also lets it run any script in DIR,
@@ -231,6 +241,35 @@ async function readSecret(prompt: string, forceStdin = false): Promise<string> {
   });
 }
 
+/** Reads a pasted private key with no echo: ends at the -----END ... PRIVATE KEY----- line, or Ctrl-D. */
+async function readKeyHidden(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY) return readStdin();
+  process.stderr.write(prompt);
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    let buf = '';
+    const done = () => { stdin.setRawMode(false); stdin.pause(); stdin.off('data', onData); process.stderr.write('\n'); };
+    const onData = (chunk: string) => {
+      for (const c of chunk) {
+        if (c === '\u0003') { done(); return reject(new Error('Cancelled')); }
+        if (c === '\u0004') { done(); return resolve(buf); }
+        buf += c === '\r' ? '\n' : c;
+      }
+      if (/-----END [A-Z0-9 ]*PRIVATE KEY-----\s*$/.test(buf)) { done(); resolve(buf); }
+    };
+    stdin.setRawMode(true);
+    stdin.setEncoding('utf8');
+    stdin.resume();
+    stdin.on('data', onData);
+  });
+}
+
+/** "user@host" or "host" -> parts. */
+function splitHost(v: string, user?: string): { host: string; user: string } {
+  const at = v.lastIndexOf('@');
+  return at > 0 ? { user: user ?? v.slice(0, at), host: v.slice(at + 1) } : { host: v, user: user ?? os.userInfo().username };
+}
+
 const PREFIX: Record<string, string> = { openai: 'sk-', anthropic: 'sk-ant-' };
 const day = (iso: string) => iso.slice(0, 10);
 
@@ -320,7 +359,7 @@ async function main() {
     }
     setVaultPassphrase(p1);
   }
-  const store = () => new KeyringStore(undefined, { maxKeys: new LicenseStore().limits().maxKeys });
+  const store = () => new KeyringStore(undefined, { maxKeys: new LicenseStore().limits().maxKeys - new SshStore().count() }); // SSH logins count towards the same limit
   const label = str(flags.label);
 
   switch (cmd) {
@@ -469,6 +508,92 @@ async function main() {
       if (sub === 'remove') return out(name && ts.remove(name) ? `Removed tool ${name}` : 'No such tool.');
       return fail('Usage: lllanyard tool add|list|remove');
     }
+    case 'ssh': {
+      const ssh = new SshStore();
+      const sub = pos[0] ?? fail('Usage: lllanyard ssh add|generate|list|remove|pubkey|with|connect ... (or: lllanyard ssh <name> to connect)');
+      const total = () => store().list().length + ssh.count();
+      const limit = () => ({ maxTotal: new LicenseStore().limits().maxKeys, otherCount: store().list().length });
+      const need = (n: string | undefined, usage: string) => n ?? fail(usage);
+      const login = (n: string) => ssh.get(n) ?? fail(`No SSH login called "${n}". See: lllanyard ssh list`);
+      const run = async (entries: SshEntry[], build: (s: Awaited<ReturnType<typeof openSshSession>>) => { command: string; args: string[] }, what: string) => {
+        const session = await openSshSession(entries).catch((e: Error) => fail(e.message));
+        createUsageLog().write({ ts: new Date().toISOString(), event: 'ssh', tool: what, cwd: process.cwd(), keys: entries.map((e) => `ssh:${e.name}`) });
+        const stop = () => session.close();
+        process.once('SIGTERM', () => { stop(); process.exit(143); });
+        try {
+          const { command, args } = build(session);
+          process.exitCode = await new Promise<number>((resolve) => {
+            const child = spawnChild(command, args, { stdio: 'inherit', env: session.env });
+            child.on('error', (e: Error) => { process.stderr.write(`lllanyard: could not start ${command}: ${e.message}\n`); resolve(127); });
+            child.on('exit', (code, sig) => resolve(code ?? (sig ? 128 : 1)));
+          });
+        } finally { stop(); }
+      };
+      switch (sub) {
+        case 'add': {
+          const name = need(pos[1], 'Usage: lllanyard ssh add <name> --host HOST [--user USER] [--port N] [--key-file FILE | --password | --stdin]').toLowerCase();
+          assertSshName(name);
+          const { host, user } = splitHost(str(flags.host) ?? fail('Give the server with --host (host, or user@host).'), str(flags.user));
+          const port = str(flags.port) ? Number(str(flags.port)) : 22;
+          let entry: Omit<SshEntry, 'createdAt'>;
+          if (flags.password) {
+            const pw = await readSecret(`Password for ${user}@${host} (input hidden): `, Boolean(flags.stdin));
+            if (!pw) fail('No password given.');
+            entry = { name, host, user, port, auth: 'password', secret: pw };
+          } else {
+            const file = str(flags['key-file']);
+            const raw = file ? readFileSync(file.replace(/^~(?=\/|$)/, os.homedir()), 'utf8') : await readKeyHidden('Paste the private key (input hidden; it ends itself at the END line): ');
+            const key = (() => { try { return normaliseKey(raw); } catch (e) { return fail((e as Error).message); } })();
+            let passphrase: string | undefined;
+            if (keyIsEncrypted(key)) {
+              passphrase = flags.stdin && !file ? fail('An encrypted key needs its passphrase, which cannot also come from stdin. Use --key-file.') : await readSecret('This key has a passphrase. Enter it (input hidden): ');
+              if (!passphrase) fail('No passphrase given.');
+            }
+            const pub = publicKeyOf(key) ?? (file && (() => { try { return readFileSync(file + '.pub', 'utf8').trim(); } catch { return undefined; } })() || undefined);
+            entry = { name, host, user, port, auth: 'key', secret: key, ...(passphrase ? { passphrase } : {}), ...(pub ? { publicKey: pub } : {}) };
+            if (file) process.stderr.write(`Note: ${file} still holds the key in plain text. Once you've checked it works (lllanyard ssh ${name}), delete that file.\n`);
+          }
+          const m = ssh.set(entry, limit());
+          return out(`Stored ssh:${m.name} (${m.user}@${m.host}${m.port === 22 ? '' : ':' + m.port}, ${m.auth}${m.hasPassphrase ? ', passphrase kept' : ''}). Connect with: lllanyard ssh ${m.name}`);
+        }
+        case 'generate': {
+          const name = need(pos[1], 'Usage: lllanyard ssh generate <name> --host HOST [--user USER] [--port N]').toLowerCase();
+          assertSshName(name);
+          const { host, user } = splitHost(str(flags.host) ?? fail('Give the server with --host (host, or user@host).'), str(flags.user));
+          const { privateKey, publicKey } = generateKey(str(flags.comment) ?? `lllanyard-${name}`);
+          const m = ssh.set({ name, host, user, port: str(flags.port) ? Number(str(flags.port)) : 22, auth: 'key', secret: privateKey, publicKey }, limit());
+          out(`Created an ed25519 key for ssh:${m.name}; the private half is in your keychain and was never written to a file.`);
+          out('Add this public key to ~/.ssh/authorized_keys on the server:\n');
+          out(publicKey);
+          return;
+        }
+        case 'list': {
+          const all = ssh.list();
+          if (!all.length) return out('No SSH logins stored. Add one with: lllanyard ssh add <name> --host HOST');
+          for (const m of all) out(`${m.name.padEnd(20)} ${`${m.user}@${m.host}${m.port === 22 ? '' : ':' + m.port}`.padEnd(36)} ${m.auth}${m.hasPassphrase ? '+passphrase' : ''}  added ${day(m.createdAt)}`);
+          return;
+        }
+        case 'remove':
+          return out(ssh.remove(need(pos[1], 'Usage: lllanyard ssh remove <name>')) ? `Removed ssh:${pos[1]}` : 'Nothing to remove.');
+        case 'pubkey': {
+          const e = login(need(pos[1], 'Usage: lllanyard ssh pubkey <name>'));
+          return out(e.auth === 'key' ? e.publicKey ?? fail('No public key was saved for this login.') : fail('That login uses a password.'));
+        }
+        case 'with': {
+          // lllanyard ssh with <name>[,<name>...] -- <command...>: run any command (ssh, scp, rsync, git...) with these keys available.
+          const names = need(pos[1], 'Usage: lllanyard ssh with <name>[,<name>] -- <command> [args...]').split(',').filter(Boolean);
+          if (!tail.length) fail('Give the command after --, e.g.  lllanyard ssh with prod -- scp ./app.tar.gz prod-user@host:/srv/');
+          const entries = names.map(login);
+          return run(entries, () => ({ command: tail[0]!, args: tail.slice(1) }), `with ${names.join(',')}: ${path.basename(tail[0]!)}`);
+        }
+        default: {
+          // lllanyard ssh <name> [-- remote command]: an ssh session
+          const name = sub === 'connect' ? need(pos[1], 'Usage: lllanyard ssh <name> [-- remote command]') : sub;
+          const e = login(name);
+          return run([e], (s) => ({ command: 'ssh', args: sshArgs(e, s, tail) }), `connect ${e.name}`);
+        }
+      }
+    }
     case 'exec': {
       // Everything after "exec" (and optional "--remote" / "--keys a,b") is the command, passed through untouched.
       let argv = process.argv.slice(3);
@@ -610,6 +735,19 @@ async function main() {
           })),
           run: (name, args) => runForMcp(new ToolStore().get(name) ?? fail(`No approved tool "${name}".`), args, ks, timeout),
           scriptDirs,
+          ssh: {
+            list: () => new SshStore().list().map((m) => ({ name: m.name, target: `${m.user}@${m.host}${m.port === 22 ? '' : ':' + m.port}`, auth: m.auth })),
+            run: (name, command) => {
+              const next = queue.then(async () => {
+                const entry = new SshStore().get(name) ?? fail(`No SSH login "${name}".`);
+                const allowed = await confirmDialog(describeSshRun(entry, command));
+                createUsageLog().write({ ts: new Date().toISOString(), event: 'mcp-ssh', tool: `${entry.name}: ${command.slice(0, 200)}`, decision: allowed ? 'allow' : 'deny', keys: [`ssh:${entry.name}`] });
+                return allowed ? runSshCommand(entry, command, { timeoutSec: timeout }) : null;
+              });
+              queue = next.catch(() => {});
+              return next;
+            },
+          },
           runFile: (file, args) => {
             const next = queue.then(async () => {
               const plan = planScriptRun(file, args, scriptDirs, bindingsForAllKeys(ks), { pathVar: process.env.PATH });

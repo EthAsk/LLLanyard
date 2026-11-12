@@ -6,6 +6,7 @@ import { defaultBackend, type SecretBackend } from './storage/backend.js';
 import { MIN_PASSPHRASE } from './storage/file-backend.js';
 import { assertName, SECRET_RE, StoreError } from './storage/keyring-store.js';
 import { validateTool } from './tools.js';
+import { readSshRecord, validateSsh, writeSshRecord } from './ssh.js';
 
 /**
  * Encrypted backup of everything LLLanyard keeps in the secret store: keys (+ metadata), custom providers, approved
@@ -25,6 +26,7 @@ const KINDS = {
   provider: { index: '__providers__', records: (id: string) => [`provider:${id}`] },
   tool: { index: '__tools__', records: (id: string) => [`tool:${id}`] },
   agent: { index: '__agents__', records: (id: string) => [`agent:${id}`] },
+  ssh: { index: '__ssh__', records: (id: string) => [`ssh:${id}`] },
 } as const;
 type Kind = keyof typeof KINDS;
 const LICENSE = '__license__';
@@ -47,6 +49,11 @@ export function collectItems(backend: SecretBackend = defaultBackend()): BackupI
   for (const kind of Object.keys(KINDS) as Kind[]) {
     for (const id of readIndex(backend, KINDS[kind].index)) {
       const records: Record<string, string> = {};
+      if (kind === 'ssh') { // a long login is spread over several keychain entries; the backup holds it whole
+        const v = readSshRecord(backend, id);
+        if (v !== null) items.push({ kind, id, records: { [`ssh:${id}`]: v } });
+        continue;
+      }
       for (const acct of KINDS[kind].records(id)) {
         const v = backend.get(acct);
         if (v !== null) records[acct] = v;
@@ -132,6 +139,11 @@ function checkItem(it: BackupItem): void {
       assertName('client', a.client);
       return;
     }
+    case 'ssh': {
+      const v = validateSsh(parse(r[`ssh:${it.id}`]));
+      if (v.name !== it.id) throw new StoreError('SSH login name mismatch');
+      return;
+    }
     case 'license':
       if (!/^lly1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(r[LICENSE]!.trim())) throw new StoreError('license is not valid');
       return;
@@ -176,13 +188,17 @@ export function restoreBackup(payload: BackupPayload, backend: SecretBackend = d
   }
 
   const maxKeys = opts.maxKeys ?? FREE_LIMITS.maxKeys;
-  const newKeys = report.added.filter((i) => i.kind === 'key').length;
-  if (current.key.length + newKeys > maxKeys)
-    throw new StoreError(`Restoring would give ${current.key.length + newKeys} keys; your plan allows ${maxKeys}. Remove some keys first, or upgrade.`);
+  const newKeys = report.added.filter((i) => i.kind === 'key' || i.kind === 'ssh').length;
+  const total = current.key.length + current.ssh.length + newKeys;
+  if (total > maxKeys)
+    throw new StoreError(`Restoring would give ${total} keys and SSH logins; your plan allows ${maxKeys}. Remove some first, or upgrade.`);
   if (opts.dryRun) return report;
 
   // Records first, indexes last: an interrupted restore leaves unindexed records, never index entries pointing at nothing.
-  for (const it of [...report.added, ...report.replaced]) for (const [acct, v] of Object.entries(it.records)) backend.set(acct, v);
+  for (const it of [...report.added, ...report.replaced]) {
+    if (it.kind === 'ssh') { writeSshRecord(backend, it.id, it.records[`ssh:${it.id}`]!); continue; }
+    for (const [acct, v] of Object.entries(it.records)) backend.set(acct, v);
+  }
   for (const kind of Object.keys(KINDS) as Kind[]) {
     const fresh = report.added.filter((i) => i.kind === kind).map((i) => i.id);
     if (fresh.length) backend.set(KINDS[kind].index, JSON.stringify([...current[kind], ...fresh]));

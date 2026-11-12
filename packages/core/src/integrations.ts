@@ -121,6 +121,7 @@ export function claudeCodeBlock(): string {
     '- `lllanyard list` shows which keys exist and the variable names scripts get them as (values are masked).',
     '- Don\'t look in `.env` files or other files that hold secrets for keys. If a key is missing, ask the user to add it with `lllanyard add <provider>`.',
     '- MCP servers that need keys: approve them with `lllanyard tool add` and start them with `lllanyard run <name>`, never with keys in their config.',
+    '- SSH to a server: use `lllanyard ssh <name>` (or `lllanyard ssh with <name> -- scp …`) with a login the user stored (`lllanyard ssh list`). Never look in `~/.ssh`, ask for SSH keys or passwords, or write them to files. If a login is missing, ask the user to add it with `lllanyard ssh add`.',
     END,
   ].join('\n') + '\n';
 }

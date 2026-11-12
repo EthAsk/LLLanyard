@@ -55,6 +55,8 @@ Compatibility notes:
 | `restore <file> [--overwrite] [--dry-run] [--passphrase-file F]` | Merge a backup into this machine's keychain or vault. Every item is validated and the key limit checked before anything is written; existing items are kept unless `--overwrite`, and nothing is ever deleted. |
 | `start [--port N]` | Run the proxy (loopback only). Logs JSON lines to stdout. |
 | `team join <https://server:port> [--ca FILE] [--stdin]` / `status` / `leave` | Team: link this LLLanyard to your team's shared proxy. Your keys here stay personal; requests you have no key for go to the team server with your own team token. |
+| `ssh add <name> --host [user@]HOST [--port N] [--key-file F \| --password]` / `generate` / `list` / `remove` / `pubkey` | SSH logins in the keychain: a private key (with its passphrase) or a password. See [SSH logins](#ssh-logins). |
+| `ssh <name> [-- remote command]` / `ssh with <name>[,<name>] -- <command…>` | Open a session, or run scp, rsync, git or a script with the login available. |
 
 ## Using it with tools (APIs and MCP servers)
 
@@ -174,6 +176,38 @@ Honest limits:
 Use `run` for tools you trust, and give each tool the narrowest key you can (a read-only GitHub token, not your admin one).
 
 Env: `LLLANYARD_PORT`, `LLLANYARD_RPM` (requests/min per agent, default 120), `LLLANYARD_ALLOW_ORIGIN=1` (allow Electron-style requests that carry an Origin header).
+
+## SSH logins
+
+Keep the keys and passwords you use to reach servers in the keychain instead of in `~/.ssh` and shell history:
+
+```bash
+lllanyard ssh add prod --host deploy@prod.example.com            # paste the private key (nothing is shown); an encrypted key asks for its passphrase
+lllanyard ssh add nas --host admin@192.168.1.5 --password        # a password login
+lllanyard ssh generate web --host root@web1.example.com          # make a new ed25519 key; prints the public half for authorized_keys
+lllanyard ssh prod                                               # open a session
+lllanyard ssh prod -- uptime                                     # run one command
+lllanyard ssh with prod -- scp ./app.tar.gz deploy@prod.example.com:/srv/   # scp, rsync, git or a script with the key available
+```
+
+A key is loaded into a throwaway `ssh-agent` (a socket only you can reach) for the length of the session, so it is never
+written to a file and nothing else on your machine can use it. A password is given to ssh through its askpass helper,
+not on the command line. On Windows there is no agent socket, so a key is written to a private temporary file for the
+session and deleted after. Host keys are remembered in `~/.lllanyard/ssh_known_hosts` (a changed host key is refused).
+SSH logins are included in `backup` / `restore`, are logged by `usage`, and count towards your plan's key limit.
+Long keys (RSA 4096 is about 3 KB) are split over several keychain entries, because Windows Credential Manager refuses
+entries over about 2.5 KB; they are put back together when used and are saved whole in backups.
+
+**In the app:** the SSH tab adds a login (paste the key or type a password), makes a new key and shows its public half
+to copy, and removes logins.
+
+**From Claude Desktop:** with `lllanyard mcp --run` (what `setup claude-desktop` installs), Claude gets `list_ssh` (names
+and servers only) and `ssh_run`. `ssh_run` runs one command on a stored login, but only after **you** click Run in a
+dialog that shows the login and the exact command, each time; Deny is the default. Claude never sees the key or
+password, the command runs with no terminal and no input, its output has your secrets redacted, and every request is
+logged (`lllanyard usage`). Claude Code uses `lllanyard ssh` through the block `setup claude-code` adds to `CLAUDE.md`.
+
+`add --key-file` leaves your original file alone: delete it yourself once you've checked the login works.
 
 ## Security model
 

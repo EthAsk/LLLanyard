@@ -44,6 +44,18 @@ label.chk{flex-direction:row;align-items:center;gap:6px;color:var(--fg)}textarea
 <label>Rotate after (days)<input name="rotateDays" type="number" min="1" max="3650" value="90" class="w90"></label>
 <button class="p" type="submit">Save key</button></form><div id="keymsg"></div></div>
 </section>
+<section id="ssh"><div class="card"><h2>SSH logins</h2><p class="mut">Keys and passwords for your servers, kept in the keychain. Connect from a terminal with <code>lllanyard ssh &lt;name&gt;</code>. If Claude is connected (Scripts tab) it can run one command on a login, but only after you click Run in a dialog each time; it never sees the key or password.</p><div id="sshlist"></div><div id="sshmsg"></div></div>
+<div class="card"><h2>Add a login</h2><form id="addssh" class="row" autocomplete="off">
+<label>Name<input name="name" required maxlength="64" size="12" placeholder="prod" spellcheck="false"></label>
+<label>Server<input name="host" required maxlength="253" size="22" placeholder="prod.example.com" spellcheck="false"></label>
+<label>User<input name="user" required maxlength="64" size="10" placeholder="deploy" spellcheck="false"></label>
+<label>Port<input name="port" type="number" min="1" max="65535" value="22" class="w90"></label>
+<label>Sign in with<select name="auth"><option value="key">Private key</option><option value="password">Password</option></select></label>
+<label class="grow" id="sshkeybox">Private key (paste it; shown nowhere, never stored in a file)<textarea name="key" spellcheck="false" autocomplete="off" maxlength="20000" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+<label id="sshpassbox" hidden>Password<input name="password" type="password" autocomplete="new-password" maxlength="1000" size="22"></label>
+<label id="sshppbox">Key passphrase (only if the key has one)<input name="passphrase" type="password" autocomplete="new-password" maxlength="1000" size="22"></label>
+<button class="p" type="submit">Save login</button><button class="s" type="button" id="sshgen">Make a new key instead</button></form><div id="sshadd"></div></div>
+</section>
 <section id="agents"><div class="card"><h2>Agents</h2><p class="mut">Each agent gets a placeholder token. The real key never leaves LLLanyard.</p><div id="agentlist"></div></div>
 <div class="card"><h2>New agent token</h2><form id="addagent" class="row" autocomplete="off">
 <label>Name<input name="name" required maxlength="64" placeholder="claude-code"></label>
@@ -107,7 +119,7 @@ function render(){
  $('tier').textContent=S.license.tier==='free'?'Free':S.license.tier==='pro'?'Pro':'Team';
  $('proxystat').textContent=S.proxy.running?('Proxy running on port '+S.proxy.port):'Proxy stopped';
  // keys
- $('keymeter').textContent=S.keys.length+' of '+S.limits.maxKeys+' keys used'+(S.license.tier==='free'?' on the free tier':'');
+ $('keymeter').textContent=(S.keys.length+S.ssh.length)+' of '+S.limits.maxKeys+' keys and SSH logins used'+(S.license.tier==='free'?' on the free tier':'');
  var kl=$('keylist');
  // Don't redraw the table under someone typing a variable name (the page refreshes every 15 seconds).
  var typing=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.envfor;
@@ -119,6 +131,15 @@ function render(){
     h('button',{class:'s d',type:'button','aria-label':'Remove '+k.provider+' '+k.label,text:'Remove',onclick:function(){if(confirm('Remove '+k.provider+' / '+k.label+'? This deletes the stored key.'))act(api('DELETE','/api/keys',{provider:k.provider,label:k.label}),$('keymsg'),'Key removed.');}}))));});
   t.appendChild(tb);kl.appendChild(t);}}
  var dl=$('provs');clear(dl);S.providers.forEach(function(p){dl.appendChild(h('option',{value:p}));});
+
+ // ssh logins
+ var sl=$('sshlist');clear(sl);
+ if(!S.ssh.length)sl.appendChild(h('div',{class:'empty',text:'No SSH logins yet. Add one below.'}));
+ else{var st=h('table',{},h('thead',{},h('tr',{},h('th',{text:'Name'}),h('th',{text:'Server'}),h('th',{text:'Sign in with'}),h('th',{class:'r',text:''}))));var sb=h('tbody');
+  S.ssh.forEach(function(x){sb.appendChild(h('tr',{},h('td',{text:x.name}),h('td',{text:x.user+'@'+x.host+(x.port===22?'':':'+x.port)}),h('td',{text:x.auth==='key'?('Key'+(x.hasPassphrase?' + passphrase':'')):'Password'}),
+   h('td',{class:'r'},x.publicKey?h('button',{class:'s',type:'button',text:'Copy public key',onclick:function(){if(navigator.clipboard)navigator.clipboard.writeText(x.publicKey).then(function(){msg($('sshmsg'),'Public key copied. Add it to ~/.ssh/authorized_keys on '+x.host+'.',true);});}}):null,
+    h('button',{class:'s d',type:'button','aria-label':'Remove '+x.name,text:'Remove',onclick:function(){if(confirm('Remove the SSH login '+x.name+'? This deletes the stored key or password.'))act(api('DELETE','/api/ssh',{name:x.name}),$('sshmsg'),'Login removed.');}}))));});
+  st.appendChild(sb);sl.appendChild(st);}
  // agents
  var al=$('agentlist');clear(al);
  if(!S.agents.length)al.appendChild(h('div',{class:'empty',text:'No agents yet.'}));
@@ -190,9 +211,18 @@ function load(){return api('GET','/api/state').then(function(s){S=s;render();}).
 function act(p,el,ok){return p.then(function(){msg(el,ok,true);return load();}).catch(function(e){msg(el,e.message,false);});}
 function csv(v){return v.split(',').map(function(x){return x.trim();}).filter(Boolean);}
 function intOrU(v){return v===''?undefined:Number(v);}
-var tabs=[['keys','Keys'],['agents','Agents'],['tools','Scripts'],['usage','Usage'],['assistant','Assistant'],['backup','Backup'],['settings','Settings']];
+var tabs=[['keys','Keys'],['ssh','SSH'],['agents','Agents'],['tools','Scripts'],['usage','Usage'],['assistant','Assistant'],['backup','Backup'],['settings','Settings']];
 function show(id){tabs.forEach(function(t){$(t[0]).className=t[0]===id?'on':'';});Array.prototype.forEach.call($('nav').children,function(b){b.setAttribute('aria-current',String(b.dataset.t===id));});}
 tabs.forEach(function(t){var b=h('button',{type:'button',text:t[1],onclick:function(){show(t[0]);}});b.dataset.t=t[0];$('nav').appendChild(b);});
+function sshForm(){var f=document.forms.addssh;var pw=f.auth.value==='password';$('sshkeybox').hidden=pw;$('sshppbox').hidden=pw;$('sshpassbox').hidden=!pw;}
+document.forms.addssh.auth.addEventListener('change',sshForm);
+function sshBase(f){return{name:f.name.value,host:f.host.value.trim(),user:f.user.value.trim(),port:intOrU(f.port.value)};}
+document.forms.addssh.addEventListener('submit',function(e){e.preventDefault();var f=e.target;var pw=f.auth.value==='password';
+ var b=sshBase(f);b.auth=pw?'password':'key';b.secret=pw?f.password.value:f.key.value;if(!pw&&f.passphrase.value)b.passphrase=f.passphrase.value;
+ act(api('POST','/api/ssh',b),$('sshadd'),'Login saved. Connect with: lllanyard ssh '+b.name.toLowerCase()).then(function(){f.key.value='';f.password.value='';f.passphrase.value='';});});
+$('sshgen').addEventListener('click',function(){var f=document.forms.addssh;var m=$('sshadd');
+ if(!f.name.value||!f.host.value||!f.user.value){msg(m,'Fill in the name, server and user first.',false);return;}
+ api('POST','/api/ssh/generate',sshBase(f)).then(function(r){clear(m);m.appendChild(h('div',{class:'good',text:'New key created. The private half is in your keychain. Add this public key to ~/.ssh/authorized_keys on the server:'}));m.appendChild(h('div',{class:'tok',text:r.publicKey}));return load();}).catch(function(e){msg(m,e.message,false);});});
 document.forms.addkey.addEventListener('submit',function(e){e.preventDefault();var f=e.target;
  act(api('POST','/api/keys',{provider:f.provider.value,label:f.label.value||'default',secret:f.secret.value,rotateDays:intOrU(f.rotateDays.value),envName:f.envName.value||undefined}),$('keymsg'),'Key saved.').then(function(){f.secret.value='';});});
 document.forms.addagent.addEventListener('submit',function(e){e.preventDefault();var f=e.target,m=$('agentmsg');

@@ -12,6 +12,7 @@ function mkDeps(calls: any[] = []): UiDeps {
     removeKey: () => true, createAgent: (b) => { calls.push(['createAgent', b]); return 'lly_TOKEN'; }, revokeAgent: () => true,
     activateLicense: () => ({ tier: 'pro' }), removeLicense: () => {},
     review: async () => ({ text: 'Rotate now', source: 'rules' }), setAssistant: () => {}, proxy: async () => ({ running: true }),
+    addSsh: (b) => { calls.push(['addSsh', b]); }, generateSsh: (b) => { calls.push(['generateSsh', b]); return { publicKey: 'ssh-ed25519 AAAA test' }; }, removeSsh: () => true,
     isUserError: (e: any) => e?.user === true,
     addProvider: (b) => { calls.push(['addProvider', b]); }, removeProvider: () => true,
     addTool: (b) => { calls.push(['addTool', b]); return { name: b.name }; }, removeTool: () => true, setKeyEnv: (b) => { calls.push(['setKeyEnv', b]); },
@@ -128,5 +129,21 @@ test('api: services, tools, backup and restore validate input before reaching th
     assert.deepEqual(calls.at(-1), ['restore', { text: big.length, passphrase: 'p', overwrite: false, dryRun: true }]);
     assert.equal((await s.call('POST', '/api/providers', { body: { id: big } })).status, 413, 'other routes keep the small limit');
     assert.equal((await s.call('POST', '/api/restore', { body: { text: 'x', passphrase: 'p' }, token: null })).status, 401, 'restore needs the session');
+  } finally { s.close(); }
+});
+
+test('ssh logins: add, generate (returns only the public key) and remove go through the API', async () => {
+  const calls: any[] = [];
+  const s = await up(mkDeps(calls));
+  try {
+    const key = '-----BEGIN OPENSSH PRIVATE KEY-----\n' + 'A'.repeat(3000) + '\n-----END OPENSSH PRIVATE KEY-----\n';
+    { const a = await s.call('POST', '/api/ssh', { body: { name: 'prod', host: 'prod.example.com', user: 'deploy', port: 2222, auth: 'key', secret: key, passphrase: 'pp' } }); assert.equal(a.status, 200, a.body); }
+    assert.deepEqual(calls[0], ['addSsh', { name: 'prod', host: 'prod.example.com', user: 'deploy', port: 2222, auth: 'key', secret: key, passphrase: 'pp' }]);
+    const g = await s.call('POST', '/api/ssh/generate', { body: { name: 'web', host: 'h', user: 'u' } });
+    assert.deepEqual(JSON.parse(g.body), { publicKey: 'ssh-ed25519 AAAA test' });
+    assert.equal(calls[1][1].port, 22);
+    { const d = await s.call('DELETE', '/api/ssh', { body: { name: 'prod' }, headers: { 'content-length': '15' } }); assert.equal(d.status, 200, d.body); }
+    assert.equal((await s.call('POST', '/api/ssh', { body: { name: 'x', host: 5, user: 'u', secret: 'p' } })).status, 400);
+    assert.equal((await s.call('POST', '/api/ssh', { token: null, body: {} })).status, 401);
   } finally { s.close(); }
 });

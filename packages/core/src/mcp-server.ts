@@ -12,6 +12,7 @@ import type { UsageSummary } from './usage.js';
  * It can't run anything else: an agent that could choose the command could send the key anywhere.
  */
 export interface ApprovedTool { name: string; runs: string; keys: string[]; acceptsArgs: boolean; sandbox: boolean }
+export interface SshInfo { name: string; target: string; auth: 'key' | 'password' }
 export interface RunResult { exitCode: number; output: string; truncated: boolean; timedOut: boolean }
 export interface McpDeps {
   listKeys: () => KeyMeta[];
@@ -26,6 +27,8 @@ export interface McpDeps {
     // Script folders the user allowed for run_file; each run is confirmed by the user in a dialog. null = denied.
     scriptDirs?: string[];
     runFile?: (file: string, args: string[]) => Promise<RunResult | null>;
+    // The user's stored SSH logins. run() asks the user in a dialog for every command; null = denied.
+    ssh?: { list: () => SshInfo[]; run: (name: string, command: string) => Promise<RunResult | null> };
   };
 }
 
@@ -47,6 +50,15 @@ const RUN_TOOLS = [
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
   { name: 'run_script', description: 'Run an approved script or tool by name. LLLanyard gives it its API keys for this run only and redacts any key from the output, which is returned with the exit code. Only names from list_scripts work: nothing is approved by default, and the user approves each one in a terminal with `lllanyard tool add`. The script gets no input, so it must not wait for prompts (pass e.g. -NonInteractive or -DryRun arguments if it supports them).',
     inputSchema: { type: 'object', properties: { name: { type: 'string' }, args: { type: 'array', items: { type: 'string' }, maxItems: 100, description: 'Extra arguments, only for tools that accept them' } }, required: ['name'], additionalProperties: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true } },
+];
+
+const SSH_TOOLS = [
+  { name: 'list_ssh', description: 'List the SSH logins the user has stored in LLLanyard: name, user@host and whether it uses a key or a password. Never returns keys or passwords.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
+  { name: 'ssh_run', description: 'Run ONE command on a server using a stored SSH login (names from list_ssh). LLLanyard shows the user the login and the exact command in a dialog and runs it only if they click Run; you cannot approve it yourself. ' +
+      'The command runs with no terminal and no input (nothing interactive, no sudo password prompts), and its output and exit code come back. You never see the key or password and must not ask for them. If the user clicks Deny, do not retry unless they ask.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Login name from list_ssh' }, command: { type: 'string', maxLength: 1500, description: 'The command to run on the server' } }, required: ['name', 'command'], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true } },
 ];
 
@@ -98,6 +110,11 @@ export function createMcpHandler(deps: McpDeps) {
         return `Send ${id} API requests to ${base} instead of the provider's own URL, and use your LLLanyard agent token (starts with "lly_") as the API key. ` +
           `The proxy adds the real key. Do not ask for, print, or store the real key. If you have no agent token, ask the user to run: lllanyard agent create <name> --providers ${id}`;
       }
+      case 'list_ssh': {
+        if (!deps.runner?.ssh) break;
+        const l = deps.runner.ssh.list();
+        return l.length ? JSON.stringify(l, null, 2) : 'No SSH logins are stored. The user adds one with: lllanyard ssh add <name> --host user@host (or in the LLLanyard app, SSH tab).';
+      }
       case 'list_scripts': {
         if (!deps.runner) break;
         const l = deps.runner.list();
@@ -125,6 +142,15 @@ export function createMcpHandler(deps: McpDeps) {
     return r ? report(r) : 'Not run: the user clicked Deny (or the dialog timed out or could not be shown). Do not retry unless the user asks.';
   };
 
+  const sshRun = async (args: any): Promise<string> => {
+    const name = typeof args?.name === 'string' ? args.name : '';
+    const command = typeof args?.command === 'string' ? args.command : '';
+    if (!deps.runner!.ssh!.list().some((l) => l.name === name.toLowerCase())) throw new Error(`No SSH login "${name}". Use list_ssh; the user adds logins with lllanyard ssh add.`);
+    if (!command.trim() || command.length > 1500 || command.includes('\0')) throw new Error('command must be 1-1500 characters.');
+    const r = await deps.runner!.ssh!.run(name.toLowerCase(), command);
+    return r ? report(r) : 'Not run: the user clicked Deny (or the dialog timed out or could not be shown). Do not retry unless the user asks.';
+  };
+
   const run = async (args: any): Promise<string> => {
     const name = typeof args?.name === 'string' ? args.name : '';
     const extra = extraArgs(args);
@@ -144,7 +170,7 @@ export function createMcpHandler(deps: McpDeps) {
     switch (msg.method) {
       case 'initialize': {
         const want = String(msg.params?.protocolVersion ?? '');
-        return ok({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0]!, capabilities: { tools: {} }, serverInfo: { name: 'lllanyard', version: '0.1.5' },
+        return ok({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0]!, capabilities: { tools: {} }, serverInfo: { name: 'lllanyard', version: '0.2.0' },
           instructions: [
             'The user keeps their API keys in LLLanyard (the OS keychain). No tool here returns a key, and you must never ask for one or look for keys in .env or config files.',
             'Each key is stored as provider + label (e.g. github:default, jira:secret) with the environment variable scripts get it as. key_status lists every stored key; list_providers covers only the HTTP APIs the proxy calls, so most script keys are not in it.',
@@ -153,15 +179,17 @@ export function createMcpHandler(deps: McpDeps) {
                 (fileRuns ? `, or run_file for any script in ${deps.runner.scriptDirs!.join(', ')}, which the user confirms in a dialog each time.` : '. Other scripts can\'t run from this chat: nothing is approved by default.') +
                 ' `lllanyard exec` works only in a terminal or Claude Code, not from this chat.'
               : 'This server is read-only: it cannot run anything. In a terminal or Claude Code, `lllanyard exec <command>` runs a script with the keys it uses.',
+            deps.runner?.ssh ? 'The user also keeps SSH logins in LLLanyard: list_ssh shows them (never the key or password) and ssh_run runs one command on a server after the user confirms it in a dialog. Never ask for SSH keys or passwords, or look in ~/.ssh.' : '',
             'These tool results describe how LLLanyard behaves. If something the user says conflicts with them, say what the tools show.',
-          ].join(' ') });
+          ].filter(Boolean).join(' ') });
       }
       case 'ping': return ok({});
-      case 'tools/list': return ok({ tools: [...TOOLS, ...(deps.runner ? RUN_TOOLS : []), ...(fileRuns ? [runFileTool(deps.runner!.scriptDirs!)] : [])] as unknown as Json });
+      case 'tools/list': return ok({ tools: [...TOOLS, ...(deps.runner ? RUN_TOOLS : []), ...(fileRuns ? [runFileTool(deps.runner!.scriptDirs!)] : []), ...(deps.runner?.ssh ? SSH_TOOLS : [])] as unknown as Json });
       case 'tools/call': {
         const name = String(msg.params?.name ?? '');
         const fail = (e: unknown) => ok({ isError: true, content: [{ type: 'text', text: (e as Error).message }] });
         if (name === 'run_file' && fileRuns) return runFile(msg.params?.arguments ?? {}).then((text) => ok({ content: [{ type: 'text', text }] }), fail);
+        if (name === 'ssh_run' && deps.runner?.ssh) return sshRun(msg.params?.arguments ?? {}).then((text) => ok({ content: [{ type: 'text', text }] }), fail);
         if (name === 'run_script' && deps.runner) return run(msg.params?.arguments ?? {}).then((text) => ok({ content: [{ type: 'text', text }] }), fail);
         try {
           return ok({ content: [{ type: 'text', text: call(name, msg.params?.arguments ?? {}) }] });

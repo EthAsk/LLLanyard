@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  AgentStore, TeamStore, FREE_LIMITS, KeyringStore, LicenseStore, ProviderStore, StoreError, allProviders, askLocalModel, assertLocalEndpoint, backendKind,
+  AgentStore, TeamStore, SshStore, generateKey, assertSshName, FREE_LIMITS, KeyringStore, LicenseStore, ProviderStore, StoreError, allProviders, askLocalModel, assertLocalEndpoint, backendKind,
   buildFacts, defaultBackend, readUsage, rotationStatus, ruleBasedReview, sandboxSelfTest, summarize, usageLogPath, DEFAULT_ASSISTANT,
   type AssistantConfig, type Launch, withClaudeDesktopClosed, claudeDesktopRunning, canRestartClaudeDesktop, claudeCodeStatus, claudeDesktopStatus, connectClaudeCode, connectClaudeDesktop, disconnectClaudeCode, disconnectClaudeDesktop, ToolStore, createBackup, describeItem, findCommand, pinScript, pinFiles, bindingsForKeys, readBackup, restoreBackup,
 } from '@lllanyard/core';
@@ -18,7 +18,8 @@ const CONFIG_SLOT = '__assistant__';
 /** Wires the UI server to the real key stores. */
 export function realDeps(opts: { proxyPort: number; launch?: Launch }): UiDeps {
   const backend = () => defaultBackend();
-  const keys = () => new KeyringStore(undefined, { maxKeys: new LicenseStore().limits().maxKeys });
+  const keys = () => new KeyringStore(undefined, { maxKeys: new LicenseStore().limits().maxKeys - new SshStore().count() }); // SSH logins count towards the same limit
+  const sshLimit = () => ({ maxTotal: new LicenseStore().limits().maxKeys, otherCount: new KeyringStore().list().length });
   const loadCfg = (): AssistantConfig => { try { const v = backend().get(CONFIG_SLOT); return v ? { ...DEFAULT_ASSISTANT, ...JSON.parse(v) } : DEFAULT_ASSISTANT; } catch { return DEFAULT_ASSISTANT; } };
   let proxy: { close: () => void; port: number } | undefined;
   let sandbox: ReturnType<typeof sandboxSelfTest> | undefined;
@@ -33,6 +34,7 @@ export function realDeps(opts: { proxyPort: number; launch?: Launch }): UiDeps {
       sandbox ??= sandboxSelfTest();
       return {
         keys: list.map((m) => { const r = rotationStatus(m); return { provider: m.provider, label: m.label, last4: m.last4, envName: m.envName, state: r.state, dueInDays: r.dueInDays, rotateUrl: r.rotateUrl }; }),
+        ssh: new SshStore().list().map((m) => ({ name: m.name, host: m.host, user: m.user, port: m.port, auth: m.auth, hasPassphrase: m.hasPassphrase, publicKey: m.publicKey })),
         agents: new AgentStore().list(),
         providers: Object.keys(allProviders(new ProviderStore())),
         customProviders: new ProviderStore().list(),
@@ -55,6 +57,14 @@ export function realDeps(opts: { proxyPort: number; launch?: Launch }): UiDeps {
     },
     addKey: (b) => { keys().set(b.provider, b.secret, { label: b.label, rotateAfterDays: b.rotateDays, envName: b.envName }); },
     removeKey: (p, l) => keys().remove(p, l),
+    addSsh: (b) => { new SshStore().set({ name: b.name, host: b.host, user: b.user, port: b.port, auth: b.auth, secret: b.secret, ...(b.passphrase ? { passphrase: b.passphrase } : {}) }, sshLimit()); },
+    generateSsh: (b) => {
+      assertSshName(b.name);
+      const { privateKey, publicKey } = generateKey(`lllanyard-${b.name}`);
+      new SshStore().set({ name: b.name, host: b.host, user: b.user, port: b.port, auth: 'key', secret: privateKey, publicKey }, sshLimit());
+      return { publicKey };
+    },
+    removeSsh: (n) => new SshStore().remove(n),
     createAgent: (b) => {
       const lic = new LicenseStore(), agents = new AgentStore();
       if (!agents.list().some((a) => a.name === b.name.toLowerCase()) && agents.list().length >= lic.maxAgents())
