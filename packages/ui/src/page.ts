@@ -76,7 +76,7 @@ label.chk{flex-direction:row;align-items:center;gap:6px;color:var(--fg)}textarea
 <p>Put <code>lllanyard exec</code> in front of the command you'd normally type:</p>
 <div class="tok">lllanyard exec pwsh -File ./Deploy-App.ps1 -DryRun</div>
 <p class="mut mt10">LLLanyard reads the script, and the helper files it loads, for your keys' variable names (set on the Keys tab) and passes only the keys it uses, for that run only. Keys are never printed: any that show up in its output are replaced with [REDACTED]. Every run is listed on the Usage tab.</p></div>
-<div class="card"><h2>Connect AI apps</h2><p class="mut">Let Claude run your scripts with your keys without ever seeing them. This works with a normal Claude subscription: no API key and no API billing.</p><div id="applist"></div><div id="appmsg"></div></div>
+<div class="card"><h2>Connect AI apps</h2><p class="mut">Let your AI tools run scripts and SSH with your keys without ever seeing them. Claude works with a normal subscription: no API key and no API billing.</p><div id="applist"></div><div id="appmsg"></div></div>
 <div class="card" id="toolcard" hidden><h2>Approved tools</h2><p class="mut">Pinned scripts and MCP servers set up with <code>lllanyard tool add</code>.</p><div id="toollist"></div><div id="toolmsg"></div></div></section>
 <section id="backup"><div class="card"><h2>Back up</h2><p class="mut">One encrypted file with your keys, services, tools, agents and license, saved in your home folder. Keep the passphrase somewhere else: without it the file can't be restored.</p>
 <form id="bk" class="row" autocomplete="off"><label>Passphrase (12+ characters)<input name="p1" type="password" required minlength="12" maxlength="1000" autocomplete="new-password"></label>
@@ -176,6 +176,10 @@ function render(){
  al.appendChild(h('div',{class:'mt14'},h('b',{text:'Claude Code'}),h('span',{class:cc.connected?'good':'mut',text:cc.connected?'  Connected':'  Not connected'}),
   h('p',{class:'mut',text:'Adds a short section to '+cc.file+' telling Claude Code to run scripts with lllanyard exec and never read keys from .env files.'}),
   h('button',{class:cc.connected?'s d':'p',type:'button',text:cc.connected?'Disconnect':'Connect',onclick:function(){act(api('POST','/api/setup',{app:'claude-code',remove:cc.connected}),$('appmsg'),cc.connected?'Removed.':'Claude Code connected. New sessions pick it up.');}})));
+ (A.others||[]).forEach(function(a){
+  var b=h('button',{class:a.connected?'s d':'p',type:'button',text:a.connected?'Disconnect':'Connect',onclick:function(){act(api('POST','/api/setup',{app:a.id,remove:a.connected}),$('appmsg'),a.connected?'Removed.':a.name+' connected. New sessions pick it up.');}});b.disabled=!A.canConnect;
+  al.appendChild(h('div',{class:'mt14'},h('b',{text:a.name}),h('span',{class:a.connected?'good':'mut',text:a.connected?'  Connected':(a.installed?'  Installed, not connected':'  Not connected')}),h('p',{class:'mut',text:a.summary}),b));});
+ al.appendChild(h('p',{class:'mut mt14',text:'Another agent? Run lllanyard setup agent: it adds the instructions to AGENTS.md and shows the MCP settings to paste in.'}));
  // usage
  var u=S.usage,ub=$('usagebody');clear(ub);
  ub.appendChild(h('div',{class:'stats'},stat('Requests',u.requests),stat('Server errors',u.errors),stat('Rate-limited',u.rateLimited),stat('Kill-switch trips',u.killSwitch),stat('Blocked',u.denied)));

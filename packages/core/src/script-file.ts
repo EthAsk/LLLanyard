@@ -98,7 +98,8 @@ export function confirmDialog(message: string, opts: { platform?: NodeJS.Platfor
   const platform = opts.platform ?? process.platform;
   const t = opts.timeoutSec ?? 120;
   let cmd: string, args: string[], yes: (out: string, code: number | null) => boolean;
-  const env = { ...process.env, LLY_MSG: message };
+  // Windows' message box has fixed Yes / No buttons, so the text must say Yes where the other dialogs say Run.
+  const env = { ...process.env, LLY_MSG: platform === 'win32' ? message.replace(/\bclick Run\b/g, 'click Yes') : message };
   if (platform === 'darwin') {
     cmd = '/usr/bin/osascript';
     args = ['-e', 'on run argv', '-e', `display dialog (item 1 of argv) with title "LLLanyard" buttons {"Deny", "Run"} default button "Deny" cancel button "Deny" with icon caution giving up after ${t}`, '-e', 'end run', '--', message];

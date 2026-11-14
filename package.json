@@ -1,7 +1,7 @@
 {
   "name": "lllanyard",
   "private": true,
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Keep API keys out of AI agents. Keys live in your OS keychain; agents only ever see a worthless placeholder token.",
   "workspaces": [
     "packages/*"

@@ -14,6 +14,16 @@ import { assertName, StoreError } from './storage/keyring-store.js';
  * shell: a key is loaded into a throwaway ssh-agent for the length of one session, a password is handed to ssh through
  * its askpass helper.
  */
+/**
+ * Limits on what a stored login may be used for, checked by `lllanyard ssh` and by Claude Desktop's ssh_run.
+ * - allow: only these remote commands (`*` matches any text without shell operators). With an allow-list the login can't
+ *   open a shell or be used by `ssh with`, and a command containing ; & | ` $ < > ( ) \\ or a line break is refused.
+ * - confirm: ask the user in a dialog before every use, including from a terminal.
+ * - expires: refuse after this time.
+ * This limits what an AI can ask for through LLLanyard; the server account's own permissions are the real boundary.
+ */
+export interface SshPolicy { allow?: string[]; confirm?: boolean; expires?: string }
+
 export interface SshEntry {
   name: string;
   host: string;
@@ -23,6 +33,7 @@ export interface SshEntry {
   secret: string; // private key (PEM / OpenSSH text) or password
   passphrase?: string; // for an encrypted private key
   publicKey?: string; // one line, to paste into the server's authorized_keys
+  policy?: SshPolicy;
   createdAt: string;
 }
 export type SshMeta = Omit<SshEntry, 'secret' | 'passphrase'> & { hasPassphrase: boolean; last4: string };
@@ -30,7 +41,7 @@ export type SshMeta = Omit<SshEntry, 'secret' | 'passphrase'> & { hasPassphrase:
 const INDEX = '__ssh__';
 const HOST_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$/; // no leading "-": a host must never be read as an ssh option
 const USER_RE = /^[A-Za-z0-9_.][A-Za-z0-9_.@-]{0,63}$/;
-export const SSH_RESERVED = new Set(['add', 'generate', 'list', 'remove', 'pubkey', 'with', 'connect', 'help']);
+export const SSH_RESERVED = new Set(['add', 'generate', 'list', 'remove', 'pubkey', 'with', 'connect', 'help', 'policy']);
 
 export function assertSshName(name: string) {
   assertName('connection name', name);
@@ -59,6 +70,63 @@ export function keyIsEncrypted(key: string): boolean {
   return buf.subarray(magic.length + 4, magic.length + 4 + len).toString('latin1') !== 'none';
 }
 
+const SHELL_OPERATORS = /[;&|`$<>()\\\r\n]/;
+
+export function validatePolicy(v: unknown): SshPolicy | undefined {
+  if (!v || typeof v !== 'object') throw new StoreError('Invalid login policy.');
+  const p = v as SshPolicy;
+  const out: SshPolicy = {};
+  if (p.allow !== undefined) {
+    if (!Array.isArray(p.allow) || p.allow.length > 50) throw new StoreError('The allowed commands must be a list of up to 50.');
+    const list = p.allow.map((a) => (typeof a === 'string' ? a.trim().replace(/\s+/g, ' ') : ''));
+    for (const a of list) {
+      if (!a || a.length > 200) throw new StoreError('Each allowed command must be 1-200 characters.');
+      if (SHELL_OPERATORS.test(a)) throw new StoreError(`Allowed command "${a}" has a shell operator (; & | \` $ < > ( ) \\). Allow one plain command at a time.`);
+    }
+    if (list.length) out.allow = list;
+  }
+  if (p.confirm !== undefined) { if (typeof p.confirm !== 'boolean') throw new StoreError('Invalid login policy.'); if (p.confirm) out.confirm = true; }
+  if (p.expires !== undefined) {
+    if (typeof p.expires !== 'string' || Number.isNaN(Date.parse(p.expires))) throw new StoreError('Invalid expiry date.');
+    out.expires = p.expires;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** "30d", "12h" or a date (2026-12-31) to an ISO time. */
+export function parseExpiry(text: string, now = new Date()): string {
+  const m = /^(\d{1,4})([hd])$/i.exec(text.trim());
+  if (m) return new Date(now.getTime() + Number(m[1]) * (m[2]!.toLowerCase() === 'h' ? 3_600_000 : 86_400_000)).toISOString();
+  const t = Date.parse(text);
+  if (Number.isNaN(t)) throw new StoreError('Give an expiry like 30d, 12h or 2026-12-31.');
+  return new Date(t).toISOString();
+}
+
+export type SshUse = { kind: 'shell' } | { kind: 'with' } | { kind: 'command'; command: string };
+
+/** Why this login may not be used this way, or null if it may. */
+export function checkSshPolicy(e: Pick<SshEntry, 'name' | 'policy'>, use: SshUse, now = new Date()): string | null {
+  const p = e.policy;
+  if (!p) return null;
+  if (p.expires && Date.parse(p.expires) <= now.getTime()) return `The login "${e.name}" expired on ${p.expires.slice(0, 10)}. Renew it with: lllanyard ssh policy ${e.name} --expires 30d`;
+  if (p.allow?.length) {
+    const list = p.allow.join(', ');
+    if (use.kind === 'shell') return `The login "${e.name}" is limited to specific commands (${list}), so it can't open a shell. Run one: lllanyard ssh ${e.name} -- <command>`;
+    if (use.kind === 'with') return `The login "${e.name}" is limited to specific commands (${list}), so it can't be used with scp, rsync or git.`;
+    // Operators are looked for in the command exactly as it will be sent: a line break must not be tidied into a space first.
+    if (SHELL_OPERATORS.test(use.command)) return `The login "${e.name}" only runs plain commands: no ; & | \` $ < > ( ) or line breaks. Allowed: ${list}`;
+    const cmd = use.command.trim().replace(/\s+/g, ' ');
+    const ok = p.allow.some((a) => new RegExp('^' + a.split('*').map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^;&|`$<>()\\\\\\r\\n]*') + '$').test(cmd));
+    if (!ok) return `"${cmd}" isn't one of the commands allowed for "${e.name}": ${list}`;
+  }
+  return null;
+}
+
+export function describePolicy(p: SshPolicy | undefined): string {
+  if (!p) return '';
+  return [p.allow?.length ? `only: ${p.allow.join(' | ')}` : '', p.confirm ? 'asks each time' : '', p.expires ? `expires ${p.expires.slice(0, 10)}` : ''].filter(Boolean).join('; ');
+}
+
 export function validateSsh(v: unknown): SshEntry {
   const e = v as Partial<SshEntry> | null;
   if (!e || typeof e !== 'object') throw new StoreError('SSH record is malformed.');
@@ -72,9 +140,11 @@ export function validateSsh(v: unknown): SshEntry {
   else if (/[\r\n\0]/.test(e.secret)) throw new StoreError('A password cannot contain line breaks.');
   if (e.passphrase !== undefined && (typeof e.passphrase !== 'string' || /[\r\n\0]/.test(e.passphrase))) throw new StoreError('Invalid passphrase.');
   if (e.publicKey !== undefined && (typeof e.publicKey !== 'string' || /[\r\n]/.test(e.publicKey.trim()) || e.publicKey.length > 2000)) throw new StoreError('Invalid public key.');
+  const policy = e.policy === undefined ? undefined : validatePolicy(e.policy);
   return {
     name: e.name!, host: e.host, user: e.user, port: e.port!, auth: e.auth, secret: e.secret,
     ...(e.passphrase ? { passphrase: e.passphrase } : {}), ...(e.publicKey ? { publicKey: e.publicKey.trim() } : {}),
+    ...(policy ? { policy } : {}),
     createdAt: typeof e.createdAt === 'string' ? e.createdAt : new Date().toISOString(),
   };
 }

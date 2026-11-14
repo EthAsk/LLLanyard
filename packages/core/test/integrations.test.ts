@@ -99,3 +99,175 @@ test('node path: a stable link to the same node is preferred over a versioned on
     assert.equal(stableNodePath(exec, other), exec);
   } finally { t.done(); }
 });
+
+import {
+  agentFileConnected, codexAgentsPath, codexConfigPath, codexStatus, connectAgentFile, connectCodex, connectCopilotCli, connectCopilotProject,
+  copilotCliInstructionsPath, copilotCliMcpPath, copilotStatus, disconnectAgentFile, disconnectCodex, disconnectCopilotCli, disconnectCopilotProject,
+  genericMcpSnippet, projectInstructionsPath, projectMcpPath,
+} from '../src/index.js';
+
+test('Codex: adds instructions and an MCP table, keeps the rest, updates in place, removes cleanly', () => {
+  const t = home();
+  try {
+    const cfg = codexConfigPath(t.o), md = codexAgentsPath(t.o);
+    mkdirSync(path.dirname(cfg), { recursive: true });
+    writeFileSync(cfg, 'model = "gpt-5"\n\n[mcp_servers.other]\ncommand = "x"\n');
+    writeFileSync(md, '# My rules\n');
+    assert.equal(codexStatus(t.o).connected, false);
+    connectCodex(t.launch, t.o);
+    const toml = readFileSync(cfg, 'utf8');
+    assert.match(toml, /^model = "gpt-5"/);
+    assert.match(toml, /\[mcp_servers\.other\]/);
+    assert.match(toml, /\[mcp_servers\.lllanyard\]\ncommand = ".*node"\nargs = \[".*cli\.js", "mcp", "--run"\]\nenv = \{ PATH = "\/usr\/local\/bin:\/usr\/bin" \}/);
+    assert.match(readFileSync(md, 'utf8'), /^# My rules\n\n<!-- lllanyard:start/);
+    assert.deepEqual(codexStatus(t.o), { file: path.dirname(cfg), connected: true, mcp: true, instructions: true });
+    connectCodex(t.launch, t.o); // again: replaced, not duplicated
+    assert.equal(readFileSync(cfg, 'utf8').match(/\[mcp_servers\.lllanyard\]/g)!.length, 1);
+    assert.equal(readFileSync(md, 'utf8').match(/lllanyard:start/g)!.length, 1);
+    assert.equal(disconnectCodex(t.o).removed, true);
+    assert.equal(readFileSync(cfg, 'utf8'), 'model = "gpt-5"\n\n[mcp_servers.other]\ncommand = "x"\n');
+    assert.equal(readFileSync(md, 'utf8'), '# My rules\n');
+    assert.equal(disconnectCodex(t.o).removed, false);
+  } finally { t.done(); }
+});
+
+test('Codex: refuses to add a second table when the user already has one of that name', () => {
+  const t = home();
+  try {
+    const cfg = codexConfigPath(t.o);
+    mkdirSync(path.dirname(cfg), { recursive: true });
+    const mine = '[mcp_servers.lllanyard]\ncommand = "mine"\n';
+    writeFileSync(cfg, mine);
+    assert.throws(() => connectCodex(t.launch, t.o), /already has an \[mcp_servers\.lllanyard\] entry/);
+    assert.equal(readFileSync(cfg, 'utf8'), mine);
+    assert.equal(existsSync(codexAgentsPath(t.o)), false); // nothing half-done
+  } finally { t.done(); }
+});
+
+test('Codex: a Windows path is written as a valid TOML string', () => {
+  const t = home();
+  try {
+    connectCodex({ node: 'C:\\Program Files\\nodejs\\node.exe', cli: 'C:\\x\\cli.js', pathVar: 'C:\\a;C:\\b' }, t.o);
+    assert.match(readFileSync(codexConfigPath(t.o), 'utf8'), /command = "C:\\\\Program Files\\\\nodejs\\\\node\.exe"/);
+  } finally { t.done(); }
+});
+
+test('Copilot CLI: instructions and mcp-config.json, other servers kept, removable', () => {
+  const t = home();
+  try {
+    const mcp = copilotCliMcpPath(t.o);
+    mkdirSync(path.dirname(mcp), { recursive: true });
+    writeFileSync(mcp, JSON.stringify({ mcpServers: { other: { command: 'x' } } }));
+    assert.equal(copilotStatus(undefined, t.o).cli, false);
+    connectCopilotCli(t.launch, t.o);
+    const cfg = JSON.parse(readFileSync(mcp, 'utf8'));
+    assert.deepEqual(cfg.mcpServers.other, { command: 'x' });
+    assert.deepEqual(cfg.mcpServers.lllanyard, { type: 'local', command: t.launch.node, args: [t.launch.cli, 'mcp', '--run'], env: { PATH: t.launch.pathVar }, tools: ['*'] });
+    assert.match(readFileSync(copilotCliInstructionsPath(t.o), 'utf8'), /lllanyard exec/);
+    assert.equal(copilotStatus(undefined, t.o).cli, true);
+    assert.equal(disconnectCopilotCli(t.o).removed, true);
+    assert.deepEqual(JSON.parse(readFileSync(mcp, 'utf8')), { mcpServers: { other: { command: 'x' } } });
+    assert.equal(readFileSync(copilotCliInstructionsPath(t.o), 'utf8'), '');
+    assert.equal(disconnectCopilotCli(t.o).removed, false);
+  } finally { t.done(); }
+});
+
+test('Copilot project: shareable files with no machine paths; removable', () => {
+  const t = home();
+  try {
+    const proj = path.join(t.h, 'proj');
+    mkdirSync(path.join(proj, '.vscode'), { recursive: true });
+    writeFileSync(projectMcpPath(proj), JSON.stringify({ servers: { other: { command: 'x' } } }));
+    connectCopilotProject(proj);
+    const cfg = JSON.parse(readFileSync(projectMcpPath(proj), 'utf8'));
+    assert.deepEqual(cfg.servers.lllanyard, { type: 'stdio', command: 'lllanyard', args: ['mcp', '--run'] });
+    assert.deepEqual(cfg.servers.other, { command: 'x' });
+    assert.ok(!readFileSync(projectInstructionsPath(proj), 'utf8').includes(t.h));
+    assert.equal(copilotStatus(proj, t.o).project, true);
+    assert.equal(disconnectCopilotProject(proj).removed, true);
+    assert.deepEqual(JSON.parse(readFileSync(projectMcpPath(proj), 'utf8')), { servers: { other: { command: 'x' } } });
+  } finally { t.done(); }
+});
+
+test('Copilot: bad JSON or a non-object server list is refused without writing anything', () => {
+  const t = home();
+  try {
+    const mcp = copilotCliMcpPath(t.o);
+    mkdirSync(path.dirname(mcp), { recursive: true });
+    writeFileSync(mcp, '{ not json');
+    assert.throws(() => connectCopilotCli(t.launch, t.o), /isn't valid JSON/);
+    assert.equal(existsSync(copilotCliInstructionsPath(t.o)), false);
+    writeFileSync(mcp, JSON.stringify({ mcpServers: [] }));
+    assert.throws(() => connectCopilotCli(t.launch, t.o), /isn't an object/);
+    assert.equal(existsSync(copilotCliInstructionsPath(t.o)), false);
+  } finally { t.done(); }
+});
+
+test('generic agent: instructions go into any file, and the MCP snippet is plain JSON', () => {
+  const t = home();
+  try {
+    const f = path.join(t.h, 'AGENTS.md');
+    writeFileSync(f, '# Project\n');
+    assert.equal(agentFileConnected(f), false);
+    connectAgentFile(f);
+    assert.equal(agentFileConnected(f), true);
+    assert.match(readFileSync(f, 'utf8'), /^# Project\n\n<!-- lllanyard:start/);
+    assert.equal(disconnectAgentFile(f).removed, true);
+    assert.equal(readFileSync(f, 'utf8'), '# Project\n');
+    assert.deepEqual(JSON.parse(genericMcpSnippet()), { mcpServers: { lllanyard: { command: 'lllanyard', args: ['mcp', '--run'] } } });
+  } finally { t.done(); }
+});
+
+import { claudeHooksStatus, claudeSettingsPath, connectClaudeHooks, disconnectClaudeHooks, hookCommand } from '../src/index.js';
+
+test('Claude Code hook: added beside the user\'s own hooks and settings, refreshed in place, removed cleanly', () => {
+  const t = home();
+  try {
+    const file = claudeSettingsPath(t.o);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const mine = { model: 'opus', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'my-linter' }] }], PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'fmt' }] }] } };
+    writeFileSync(file, JSON.stringify(mine));
+    assert.equal(claudeHooksStatus(t.o), false);
+    assert.equal(claudeCodeStatus(t.o).hooks, false);
+    connectClaudeHooks(t.launch, t.o);
+    let cfg = JSON.parse(readFileSync(file, 'utf8'));
+    assert.equal(cfg.model, 'opus');
+    assert.deepEqual(cfg.hooks.PostToolUse, mine.hooks.PostToolUse);
+    assert.equal(cfg.hooks.PreToolUse.length, 2);
+    assert.deepEqual(cfg.hooks.PreToolUse[0], mine.hooks.PreToolUse[0]);
+    assert.deepEqual(cfg.hooks.PreToolUse[1].hooks, [{ type: 'command', command: hookCommand(t.launch) }]);
+    assert.match(cfg.hooks.PreToolUse[1].matcher, /Read.*Bash/);
+    assert.equal(claudeHooksStatus(t.o), true);
+    connectClaudeHooks({ ...t.launch, cli: '/new/cli.js' }, t.o); // run again after moving LLLanyard: replaced, not duplicated
+    cfg = JSON.parse(readFileSync(file, 'utf8'));
+    assert.equal(cfg.hooks.PreToolUse.length, 2);
+    assert.match(cfg.hooks.PreToolUse[1].hooks[0].command, /\/new\/cli\.js" hook claude-code$/);
+    assert.equal(disconnectClaudeHooks(t.o).removed, true);
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), mine);
+    assert.equal(disconnectClaudeHooks(t.o).removed, false);
+  } finally { t.done(); }
+});
+
+test('Claude Code hook: starts from no settings file, and removing leaves no empty hooks object', () => {
+  const t = home();
+  try {
+    connectClaudeHooks(t.launch, t.o);
+    assert.equal(disconnectClaudeHooks(t.o).removed, true);
+    assert.deepEqual(JSON.parse(readFileSync(claudeSettingsPath(t.o), 'utf8')), {});
+  } finally { t.done(); }
+});
+
+test('Claude Code hook: bad settings are refused without writing; the command quotes paths with spaces', () => {
+  const t = home();
+  try {
+    const file = claudeSettingsPath(t.o);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, '{ nope');
+    assert.throws(() => connectClaudeHooks(t.launch, t.o), /isn't valid JSON/);
+    writeFileSync(file, JSON.stringify({ hooks: [] }));
+    assert.throws(() => connectClaudeHooks(t.launch, t.o), /isn't an object/);
+    writeFileSync(file, JSON.stringify({ hooks: { PreToolUse: {} } }));
+    assert.throws(() => connectClaudeHooks(t.launch, t.o), /isn't a list/);
+    assert.equal(hookCommand({ node: '/opt/n/node', cli: '/My Files/LLLanyard/cli.js', pathVar: '' }), '"/opt/n/node" "/My Files/LLLanyard/cli.js" hook claude-code');
+  } finally { t.done(); }
+});

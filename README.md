@@ -50,6 +50,7 @@ Compatibility notes:
 | `provider add <id> --upstream https://… [--auth bearer\|header --header NAME --prefix TXT]` / `list` / `remove` | Teach the proxy a new API host (GitHub, Slack, your own service). Built-ins: openai, anthropic, gemini, openrouter, github, slack, stripe, notion. |
 | `tool add <name> --env VAR=provider[:label] [--allow-host H] [--kill-on-leak] [--pass-env V] [--inherit-env] [--no-scrub] -- <command> [args…]` / `list` / `remove` | Approve a command (e.g. an MCP server) to receive keys as environment variables, with the safeguards below. |
 | `run <name> [-- args…]` | Run an approved tool with its keys injected and scrubbed from its output. Extra args are appended only if the tool was approved with `--allow-args`. For script tools (python, node, sh, pwsh…) the script file is pinned by hash at approval and `run` refuses if it has changed since; `--allow-args` is refused for bare interpreters (`python3 -c`, `-m`) and launchers (`env`, `xargs`, `sudo`, `npx`). `run --env … -- <cmd>` is a one-off that needs a human to confirm at a terminal. |
+| `audit [--json]` | Show what an AI agent on this computer could still get at (plaintext keys, SSH keys on disk, tools not set up) and how to fix each. Exit 1 if anything needs fixing. See [Audit](#audit-what-can-an-agent-still-reach). |
 | `scan [paths] [--import --apply [--redact]]` | Find plaintext keys in `.env` files, MCP/IDE configs and shell profiles, then move them into the keychain. Dry run unless `--apply`. |
 | `backup [--out FILE] [--passphrase-file F]` | Write one encrypted file (AES-256-GCM, scrypt passphrase) holding your keys and their metadata, custom providers, approved tools, agents, license and team server link. Agents are saved as token hashes, so existing agent tokens keep working after a restore. |
 | `restore <file> [--overwrite] [--dry-run] [--passphrase-file F]` | Merge a backup into this machine's keychain or vault. Every item is validated and the key limit checked before anything is written; existing items are kept unless `--overwrite`, and nothing is ever deleted. |
@@ -57,6 +58,7 @@ Compatibility notes:
 | `team join <https://server:port> [--ca FILE] [--stdin]` / `status` / `leave` | Team: link this LLLanyard to your team's shared proxy. Your keys here stay personal; requests you have no key for go to the team server with your own team token. |
 | `ssh add <name> --host [user@]HOST [--port N] [--key-file F \| --password]` / `generate` / `list` / `remove` / `pubkey` | SSH logins in the keychain: a private key (with its passphrase) or a password. See [SSH logins](#ssh-logins). |
 | `ssh <name> [-- remote command]` / `ssh with <name>[,<name>] -- <command…>` | Open a session, or run scp, rsync, git or a script with the login available. |
+| `setup [claude-desktop \| claude-code \| codex \| copilot [--project DIR] \| agent [--file F]] [--remove]` | Connect an AI tool: tell it to use LLLanyard, and add the MCP server. No argument shows what is connected. See [OpenAI Codex, GitHub Copilot and other agents](#using-it-with-tools-apis-and-mcp-servers). |
 
 ## Using it with tools (APIs and MCP servers)
 
@@ -121,6 +123,100 @@ Why "approve once": if `run` could inject any key into any command, an agent tha
 `curl https://evil` and walk off with the key. Approved tools live in the keychain, with the command pinned to its absolute
 path, so editing a file can't change what receives a key. Custom providers are stored in the keychain for the same reason.
 
+**4. Codex, Copilot, Gemini, Windsurf, Cursor and other agents.** The same two things Claude gets: instructions to use
+LLLanyard, and its MCP server. One command per tool:
+
+```bash
+lllanyard setup codex                      # OpenAI Codex (CLI and IDE extension)
+lllanyard setup copilot                    # GitHub Copilot CLI
+lllanyard setup copilot --project .        # VS Code Copilot Chat / Copilot coding agent, for this folder only
+lllanyard setup gemini                     # Gemini CLI
+lllanyard setup windsurf                   # Windsurf
+lllanyard setup cursor                     # Cursor (MCP server; add the instructions in its rules, see below)
+lllanyard setup agent [--file AGENTS.md]   # anything else: adds the instructions to a file, prints the MCP snippet
+lllanyard setup codex --remove             # undo any of them
+```
+
+| Tool | Instructions go in | MCP server goes in |
+|---|---|---|
+| OpenAI Codex | `~/.codex/AGENTS.md` | `~/.codex/config.toml` (`[mcp_servers.lllanyard]`) |
+| GitHub Copilot CLI | `~/.copilot/copilot-instructions.md` | `~/.copilot/mcp-config.json` |
+| VS Code Copilot Chat (`--project`) | `.github/copilot-instructions.md` | `.vscode/mcp.json` |
+| Gemini CLI | `~/.gemini/GEMINI.md` | `~/.gemini/settings.json` |
+| Windsurf | `~/.codeium/windsurf/memories/global_rules.md` | `~/.codeium/windsurf/mcp_config.json` |
+| Cursor | its settings (Rules): run `setup agent` and paste the section | `~/.cursor/mcp.json` |
+| Any other agent | the file you name (default `AGENTS.md`, which many agents read) | paste the snippet `setup agent` prints |
+
+Each one keeps the rest of the file as it was, marks the part it adds so a second run updates it rather than duplicating
+it, saves the old file as `<file>.lllanyard-backup`, and can be removed again. The `--project` files name `lllanyard`
+rather than paths on your computer, so they are safe to commit; each person still needs LLLanyard and their own keys.
+`setup` with no arguments shows what is connected.
+
+**Any agent that can run shell commands works without any setup**: `lllanyard exec` and `lllanyard ssh` are ordinary
+commands, so all the agent needs is to be told to use them. That is all `setup` does for you. For an MCP client not
+listed above, add this to its settings (some call the top-level key `servers`):
+
+```json
+{ "mcpServers": { "lllanyard": { "command": "lllanyard", "args": ["mcp", "--run"] } } }
+```
+
+What to expect:
+
+- **The instructions are a request, not a lock.** The protection is that an agent running `lllanyard exec` or
+  `lllanyard ssh` never sees the key. An agent that ignores the instructions can still look in `.env` or `~/.ssh`
+  for keys that are stored there, so remove those (`lllanyard scan --import --apply`), and for Claude Code turn on
+  the [hook](#making-claude-code-refuse-not-just-asked), which refuses the call. `lllanyard audit` lists what is
+  left.
+- **The Run dialog guards the MCP tools** (`run_file`, `ssh_run`). A command the agent runs itself in a terminal, such as
+  `lllanyard ssh prod -- uptime`, isn't behind that dialog. It is gated only by the agent's own terminal-approval
+  setting, so keep that on for tools you don't fully trust.
+- **ChatGPT (the website and the desktop and mobile apps) can't be connected.** It can only use MCP servers that are
+  hosted on the internet, not one that runs on your computer, and LLLanyard doesn't expose your keys that way. OpenAI
+  Codex runs on your computer and is supported. Likewise the Copilot coding agent that runs on GitHub's servers can't
+  reach your keychain; use Copilot in VS Code or Copilot CLI.
+
+### Making Claude Code refuse, not just asked
+
+Instructions ask an agent to leave your secrets alone; a hook makes the tool refuse. With the hook on, Claude Code
+checks every file read, edit, search and shell command before it runs, and stops any that touch a `.env` file, an SSH
+private key, or a credential file (`~/.aws/credentials`, `~/.netrc`, `~/.gnupg`, and similar). It tells Claude to use
+`lllanyard exec` or `lllanyard ssh` instead.
+
+```bash
+lllanyard setup claude-code --hooks     # adds the hook to ~/.claude/settings.json (your other settings and hooks are kept)
+lllanyard setup claude-code --remove    # removes the instructions and the hook
+```
+
+`.env.example`, `.env.sample` and `.env.template` are allowed, as are public keys, `known_hosts` and `~/.ssh/config`.
+If you keep separate Claude Code profiles (a different `CLAUDE_CONFIG_DIR` per client or project), each has its own
+settings, so set up each one: `lllanyard setup claude-code --hooks --config-dir ~/.claude-work`. `lllanyard audit`
+lists any profile folders next to `~/.claude` that aren't set up.
+Commands that start with `lllanyard` are always allowed. The check takes about a tenth of a second and never contacts
+the network; if it can't make sense of a call it lets it through, so it can't get in the way of your work.
+
+Honest limits: the hook looks at the paths a call names, so a command that builds a path while it runs
+(`cat $(printf '.e%s' nv)`) gets past it, and so does a bare file name after a `cd` inside the same command. It stops a
+careless or tricked agent, not a determined attacker. For a hard boundary run the tool under
+[`--sandbox`](#enforced-isolation---sandbox).
+
+### Audit: what can an agent still reach?
+
+```
+$ lllanyard audit
+HIGH   2 plaintext keys in files an AI agent can read
+         openai     sk-proj…FfC1     ~/.zshrc:1
+       fix: lllanyard scan --import --apply --redact
+HIGH   SSH private key on disk with no passphrase: ~/.ssh/id_ed25519
+       fix: lllanyard ssh add <name> --host user@host --key-file ~/.ssh/id_ed25519   then check it works and delete the file
+MEDIUM OpenAI Codex is installed but not set up to use LLLanyard
+       fix: lllanyard setup codex
+```
+
+It checks for plaintext keys in `.env` files, shell profiles and MCP configs (the same search as `scan`), SSH private keys
+in `~/.ssh`, keys overdue for rotation, SSH logins past their expiry, AI tools that are installed but not connected, and
+Claude Code without its hook. It prints where things are with masked values, never a secret. The exit code is 1 if
+anything is high or medium, so you can run it in a script; `--json` gives the same as data.
+
 ### Leak safeguards for tool processes
 
 A tool started with `run` holds its key, so LLLanyard puts guard rails around it:
@@ -179,35 +275,122 @@ Env: `LLLANYARD_PORT`, `LLLANYARD_RPM` (requests/min per agent, default 120), `L
 
 ## SSH logins
 
-Keep the keys and passwords you use to reach servers in the keychain instead of in `~/.ssh` and shell history:
+LLLanyard can hold the SSH keys and passwords you use to reach servers, so they don't sit in `~/.ssh`, in shell history, or
+anywhere an AI agent can read them. You connect with `lllanyard ssh <name>` instead of `ssh user@host`.
+
+### Quick start
 
 ```bash
-lllanyard ssh add prod --host deploy@prod.example.com            # paste the private key (nothing is shown); an encrypted key asks for its passphrase
-lllanyard ssh add nas --host admin@192.168.1.5 --password        # a password login
-lllanyard ssh generate web --host root@web1.example.com          # make a new ed25519 key; prints the public half for authorized_keys
-lllanyard ssh prod                                               # open a session
-lllanyard ssh prod -- uptime                                     # run one command
-lllanyard ssh with prod -- scp ./app.tar.gz deploy@prod.example.com:/srv/   # scp, rsync, git or a script with the key available
+# 1. Store a login (pick one)
+lllanyard ssh add prod --host deploy@prod.example.com          # paste your existing private key (nothing is shown)
+lllanyard ssh add nas --host admin@192.168.1.5 --password      # or store a password
+lllanyard ssh generate web --host root@web1.example.com        # or make a brand-new key; prints the public half
+
+# 2. If you generated a key, add its public half to the server's ~/.ssh/authorized_keys
+lllanyard ssh pubkey web
+
+# 3. Use it
+lllanyard ssh prod                       # interactive session
+lllanyard ssh prod -- uptime             # run one command and exit
+lllanyard ssh with prod -- scp ./app.tar.gz deploy@prod.example.com:/srv/     # scp, rsync, git or any script
 ```
 
-A key is loaded into a throwaway `ssh-agent` (a socket only you can reach) for the length of the session, so it is never
-written to a file and nothing else on your machine can use it. A password is given to ssh through its askpass helper,
-not on the command line. On Windows there is no agent socket, so a key is written to a private temporary file for the
-session and deleted after. Host keys are remembered in `~/.lllanyard/ssh_known_hosts` (a changed host key is refused).
-SSH logins are included in `backup` / `restore`, are logged by `usage`, and count towards your plan's key limit.
-Long keys (RSA 4096 is about 3 KB) are split over several keychain entries, because Windows Credential Manager refuses
-entries over about 2.5 KB; they are put back together when used and are saved whole in backups.
+`--host` is `[user@]host`; add `--port N` if the server isn't on 22. An encrypted key asks for its passphrase once, when you
+add it. `add --key-file` leaves your original key file alone: delete it yourself once you've checked the login works.
 
-**In the app:** the SSH tab adds a login (paste the key or type a password), makes a new key and shows its public half
-to copy, and removes logins.
+### How it works
 
-**From Claude Desktop:** with `lllanyard mcp --run` (what `setup claude-desktop` installs), Claude gets `list_ssh` (names
-and servers only) and `ssh_run`. `ssh_run` runs one command on a stored login, but only after **you** click Run in a
-dialog that shows the login and the exact command, each time; Deny is the default. Claude never sees the key or
-password, the command runs with no terminal and no input, its output has your secrets redacted, and every request is
-logged (`lllanyard usage`). Claude Code uses `lllanyard ssh` through the block `setup claude-code` adds to `CLAUDE.md`.
+A stored login is one record in your OS keychain: the host, user, port, and the private key (and passphrase) or password.
+When you connect, LLLanyard builds a short-lived session around it:
 
-`add --key-file` leaves your original file alone: delete it yourself once you've checked the login works.
+```
+lllanyard ssh prod
+  1. read the login from the keychain
+  2. start a private ssh-agent (a socket only your user can reach) in a temporary folder
+  3. load the key into the agent over stdin, so it is never written to a file
+  4. run ssh, pointed at that agent
+  5. when ssh exits: stop the agent, delete the temporary folder
+```
+
+So the key exists only inside the agent, only while you're connected. Nothing is left in `~/.ssh`, and other programs on your
+machine have no agent to ask.
+
+| Login type | What happens |
+|---|---|
+| **Key** (macOS, Linux) | Loaded into a throwaway `ssh-agent` for the session, as above. |
+| **Key** (Windows) | Windows has no agent socket, so the key is written to a private (owner-only) temporary file for the session and deleted afterwards. |
+| **Password** | Handed to ssh through its askpass helper, never on the command line. |
+| **Passphrase** | Same askpass route, used only to unlock the key into the agent. |
+
+`ssh with <name> -- <command>` builds the same session but runs your command in it instead of `ssh`, so tools that talk SSH
+themselves (`scp`, `rsync`, `git push`, your own scripts) pick up the login automatically. Use several logins with
+`ssh with prod,staging -- …`. Limits: one password login per session, and you can't mix a password login with key logins;
+on Windows, one key login at a time.
+
+**Host keys.** The first time you connect to a server, its host key is remembered in `~/.lllanyard/ssh_known_hosts`. If it
+later changes, the connection is refused. LLLanyard uses its own file and leaves your `known_hosts` alone.
+
+**Also good to know.** SSH logins are included in `backup` / `restore`, appear in `usage`, and count towards your plan's key
+limit. Very long keys (RSA 4096 is about 3 KB) are split over several keychain entries, because Windows Credential Manager
+refuses entries over about 2.5 KB; they are put back together when used and saved whole in backups.
+
+### Limiting a login
+
+A login can carry limits, which apply to `lllanyard ssh`, `ssh with` and Claude Desktop's `ssh_run`:
+
+```bash
+lllanyard ssh add prod --host deploy@prod.example.com --allow "uptime" --allow "df -h" --allow "systemctl status *" --expires 30d
+lllanyard ssh policy prod --confirm          # a dialog before every use, even from a terminal
+lllanyard ssh policy prod                    # show the limits
+lllanyard ssh policy prod --clear            # remove them all
+```
+
+| Limit | Effect |
+|---|---|
+| `--allow "cmd"` (repeat) | Only these commands run. `*` matches any text without shell operators. A login with an allow-list can't open a shell or be used with `scp`, `rsync` or `git`, and a command containing `;` `&` `\|` `` ` `` `$` `<` `>` `(` `)` `\` or a line break is refused. |
+| `--confirm` | Ask in a dialog before every use, including from a terminal. Closes the gap where an agent runs `lllanyard ssh` itself. |
+| `--expires 30d` | Refuse after this time (`12h`, `30d` or a date). Renew with `ssh policy <name> --expires 30d`. |
+
+These limit what an AI can ask for through LLLanyard. They are not a replacement for the server's own permissions: a
+command you allow, such as `cat /var/log/*`, can still be given arguments you didn't expect. For a real boundary also
+use a restricted account on the server, or a forced command in its `authorized_keys`.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `ssh add <name> --host [user@]HOST [--port N] [--key-file F \| --password]` | Store a login. |
+| `ssh generate <name> --host [user@]HOST` | Create a new ed25519 key in the keychain and print its public half. The private half never touches disk. |
+| `ssh pubkey <name>` | Print the public half again, to paste into `authorized_keys`. |
+| `ssh <name> [-- command]` | Connect, or run one command. |
+| `ssh with <name>[,<name>] -- <command…>` | Run any command with those logins available. |
+| `ssh policy <name> [--allow …] [--confirm] [--expires …] [--clear]` | Show or change a login's limits. |
+| `ssh list` / `ssh remove <name>` | Show stored logins (never the secrets) and their limits / delete one. |
+
+Names are case-insensitive, and can't be one of the command words above (`add`, `generate`, `list`, `remove`, `pubkey`,
+`with`, `connect`, `help`, `policy`).
+
+### Using SSH logins with an AI
+
+- **Claude Code, OpenAI Codex, GitHub Copilot and other agents** run `lllanyard ssh …` like any other command, using
+  the instructions `setup` adds to their instructions file (see [other AI tools](#using-it-with-tools-apis-and-mcp-servers)).
+  They can use the login, but never see the key or password. By default nothing prompts you when they do; to be asked
+  every time, or to restrict what they can run, give the login [limits](#limiting-a-login) (`--confirm`, `--allow`).
+- **Claude Desktop**, with `lllanyard mcp --run` (what `setup claude-desktop` installs), gets two tools:
+  - `list_ssh` returns login names and servers only.
+  - `ssh_run` runs **one command** on a stored login, but only after **you** click Run in a dialog that shows the login and
+    the exact command, every time. Deny is the default.
+
+  The command runs with no terminal and no input, a 10-minute limit, and a 1,500-character cap. The output has your
+  secrets redacted, and every request is logged (`lllanyard usage`).
+
+Be aware that once you click Run, the command runs with your login's full permissions on that server. Read the command in
+the dialog before approving, and where you can, store a login for a restricted account rather than root.
+
+### In the app
+
+The **SSH** tab adds a login (paste the key or type a password), makes a new key and shows its public half to copy, and
+removes logins.
 
 ## Security model
 

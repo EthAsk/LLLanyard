@@ -11,14 +11,16 @@ import {
   defaultRoots, parseKeyRef, redactFile, rotationStatus, runTool, sandboxSelfTest, scan, type AuthSpec, type Finding,
   createBackup, describeItem, readBackup, restoreBackup, pinScript, findCommand, pinFiles, bindingsForKeys, bindingsForAllKeys, scriptOf, neededEnv, type RunResult, type ToolDef,
   resolveScriptDirs, planScriptRun, describePlan, confirmDialog, type Launch,
-  SshStore, assertSshName, normaliseKey, keyIsEncrypted, openSshSession, sshArgs, runSshCommand, describeSshRun, generateKey, publicKeyOf, minimalEnv, type SshEntry,
+  SshStore, assertSshName, normaliseKey, keyIsEncrypted, openSshSession, sshArgs, runSshCommand, describeSshRun, generateKey, publicKeyOf, minimalEnv, checkSshPolicy, describePolicy, parseExpiry, type SshEntry, type SshPolicy,
   stableNodePath, withClaudeDesktopClosed, claudeDesktopRunning, canRestartClaudeDesktop, claudeDesktopStatus, connectClaudeDesktop, disconnectClaudeDesktop, claudeCodeStatus, connectClaudeCode, disconnectClaudeCode,
+  codexStatus, connectCodex, disconnectCodex, copilotStatus, connectCopilotCli, disconnectCopilotCli, connectCopilotProject, disconnectCopilotProject,
+  connectAgentFile, disconnectAgentFile, agentFileConnected, genericMcpSnippet, connectClaudeHooks, disconnectClaudeHooks, checkToolCall, denyResponse, APPS, findApp, buildAudit, findDiskSshKeys, renderAudit, tally, claudeHooksStatus, claudeCodeMemoryPath, findClaudeProfiles, isTestFile,
 } from '@lllanyard/core';
 import { relayEnv, startEgressProxy, startProxy, startRelay } from '@lllanyard/proxy';
 import { openBrowser, startUi } from '@lllanyard/ui';
 
-const BOOL = new Set(['no-keys', 'run', 'remove', 'restart', 'clear', 'stdin', 'allow-argv', 'import', 'redact', 'apply', 'json', 'help', 'allow-local', 'no-scrub', 'no-resolve', 'kill-on-leak', 'inherit-env', 'sandbox', 'no-open', 'print-url', 'overwrite', 'dry-run', 'allow-args', 'password']);
-const MULTI = new Set(['scripts-dir', 'pin', 'env', 'allow-host', 'pass-env', 'share-ro', 'share-rw']);
+const BOOL = new Set(['no-keys', 'run', 'remove', 'restart', 'clear', 'stdin', 'allow-argv', 'import', 'redact', 'apply', 'json', 'help', 'allow-local', 'no-scrub', 'no-resolve', 'kill-on-leak', 'inherit-env', 'sandbox', 'no-open', 'print-url', 'overwrite', 'dry-run', 'allow-args', 'password', 'confirm', 'no-confirm', 'hooks']);
+const MULTI = new Set(['allow', 'scripts-dir', 'pin', 'env', 'allow-host', 'pass-env', 'share-ro', 'share-rw']);
 
 function parse(argv: string[]) {
   const pos: string[] = [];
@@ -52,9 +54,11 @@ Keys
 
 SSH logins
   ssh add <name> --host [user@]HOST [--port N] [--key-file F | --password]   store a login (hidden prompt; a pasted key never shows)
+                  [--allow "cmd"]... [--confirm] [--expires 30d]   limit it: only these commands, a dialog each time, an end date
   ssh generate <name> --host [user@]HOST          make a new key in the keychain and print its public half for the server
   ssh <name> [-- remote command]                  connect; the key lives in a throwaway ssh-agent for the session only
   ssh with <name>[,<name>] -- <command...>        run scp, rsync, git, a script... with those keys available
+  ssh policy <name> [--allow "cmd"]... [--confirm|--no-confirm] [--expires 30d|none] [--clear]   change or show a login's limits
   ssh list | remove <name> | pubkey <name>
 
 Run scripts with your keys
@@ -91,9 +95,17 @@ Connect AI apps
                                                     let Claude Desktop run your approved tools, and with --scripts-dir (repeat)
                                                     any script in DIR after you click Run in a dialog. Claude Desktop must be
                                                     closed (it rewrites its settings on quit); --restart quits and reopens it (macOS)
-  setup claude-code [--remove]                      tell Claude Code (~/.claude/CLAUDE.md) to use lllanyard exec, not .env files
+  setup claude-code [--hooks] [--config-dir DIR] [--remove]   tell Claude Code (~/.claude/CLAUDE.md) to use lllanyard exec, not .env files;
+                                                    --hooks also makes it refuse to read .env files and SSH keys
+  setup codex [--remove]                            OpenAI Codex (CLI and IDE extension): ~/.codex/AGENTS.md and config.toml
+  setup copilot [--project DIR] [--remove]          GitHub Copilot CLI (~/.copilot); with --project, VS Code Copilot Chat and the
+                                                    Copilot coding agent for that folder (.github/copilot-instructions.md, .vscode/mcp.json)
+  setup agent [--file FILE] [--remove]              any other agent: add the instructions to FILE (default ./AGENTS.md) and show
+                                                    the MCP snippet to paste into its settings
 
 Hygiene
+  audit [--json]                                    what an AI agent on this computer could still get at, and how to fix it
+                                                    (plaintext keys, SSH keys on disk, overdue rotation, tools not set up; exit 1 if any)
   scan [paths...] [--import --apply [--redact]]     find plaintext keys; move them into the keychain
 
 Backup
@@ -453,6 +465,28 @@ async function main() {
       if (!flags.import) return out(`\n${findings.length} found. Run again with --import to move supported keys into the keychain (dry run unless --apply).`);
       return importFindings(findings, store(), Boolean(flags.apply), Boolean(flags.redact));
     }
+    case 'audit': {
+      // What an AI agent running as you could still get at. Reads files and the keychain index; prints masked values only.
+      const home = os.homedir();
+      const keys = store().list().map((k) => rotationStatus(k));
+      const sshLogins = new SshStore().list();
+      const hits = await scan({ roots: defaultRoots() });
+      const activeClaude = path.dirname(claudeCodeMemoryPath());
+      const findings = buildAudit({
+        home,
+        plaintext: hits.filter((f) => !isTestFile(f.file)).map((f) => ({ provider: f.provider, masked: f.masked, file: f.file, line: f.line })),
+        inTests: hits.filter((f) => isTestFile(f.file)).length,
+        diskKeys: findDiskSshKeys(home),
+        rotation: keys.map((k) => ({ name: `${k.provider}/${k.label}`, state: k.state as 'ok' | 'due-soon' | 'overdue', dueInDays: k.dueInDays })),
+        expiredLogins: sshLogins.filter((m) => m.policy?.expires && Date.parse(m.policy.expires) <= Date.now()).map((m) => m.name),
+        claudeProfiles: findClaudeProfiles(home, activeClaude).map((dir) => { const e = { env: { CLAUDE_CONFIG_DIR: dir } }; const c = claudeCodeStatus(e); return { dir, connected: c.connected, hooks: c.hooks }; }),
+        apps: APPS.map((a) => ({ id: a.id, name: a.name, installed: a.installed(), connected: a.status().connected, hooks: a.id === 'claude-code' ? claudeHooksStatus() : undefined })),
+      });
+      if (flags.json) out(JSON.stringify({ findings, summary: tally(findings) }, null, 2)); else out(renderAudit(findings));
+      const t = tally(findings);
+      if (t.high || t.medium) process.exitCode = 1;
+      return;
+    }
     case 'provider': {
       const [sub, id] = pos;
       const ps = new ProviderStore();
@@ -515,7 +549,22 @@ async function main() {
       const limit = () => ({ maxTotal: new LicenseStore().limits().maxKeys, otherCount: store().list().length });
       const need = (n: string | undefined, usage: string) => n ?? fail(usage);
       const login = (n: string) => ssh.get(n) ?? fail(`No SSH login called "${n}". See: lllanyard ssh list`);
-      const run = async (entries: SshEntry[], build: (s: Awaited<ReturnType<typeof openSshSession>>) => { command: string; args: string[] }, what: string) => {
+      const policyFromFlags = (base?: SshPolicy): SshPolicy | undefined => {
+        const p: SshPolicy = { ...(base ?? {}) };
+        if (multi.allow?.length) p.allow = multi.allow;
+        if (flags.confirm) p.confirm = true;
+        if (flags['no-confirm']) delete p.confirm;
+        const ex = str(flags.expires);
+        if (ex) { if (ex === 'none') delete p.expires; else p.expires = parseExpiry(ex); }
+        return Object.keys(p).length ? p : undefined;
+      };
+      const run = async (entries: SshEntry[], build: (s: Awaited<ReturnType<typeof openSshSession>>) => { command: string; args: string[] }, what: string, use: Parameters<typeof checkSshPolicy>[1]) => {
+        for (const e of entries) {
+          const bad = checkSshPolicy(e, use);
+          if (bad) fail(bad);
+          if (e.policy?.confirm && !(await confirmDialog(describeSshRun(e, use.kind === 'command' ? use.command : use.kind === 'with' ? `(a program using this login: ${what})` : '(an interactive shell)', 'A program on this computer'))))
+            fail(`Not run: the confirmation for "${e.name}" was denied, timed out or could not be shown.`);
+        }
         const session = await openSshSession(entries).catch((e: Error) => fail(e.message));
         createUsageLog().write({ ts: new Date().toISOString(), event: 'ssh', tool: what, cwd: process.cwd(), keys: entries.map((e) => `ssh:${e.name}`) });
         const stop = () => session.close();
@@ -539,7 +588,7 @@ async function main() {
           if (flags.password) {
             const pw = await readSecret(`Password for ${user}@${host} (input hidden): `, Boolean(flags.stdin));
             if (!pw) fail('No password given.');
-            entry = { name, host, user, port, auth: 'password', secret: pw };
+            entry = { name, host, user, port, auth: 'password', secret: pw, policy: policyFromFlags() };
           } else {
             const file = str(flags['key-file']);
             const raw = file ? readFileSync(file.replace(/^~(?=\/|$)/, os.homedir()), 'utf8') : await readKeyHidden('Paste the private key (input hidden; it ends itself at the END line): ');
@@ -550,7 +599,7 @@ async function main() {
               if (!passphrase) fail('No passphrase given.');
             }
             const pub = publicKeyOf(key) ?? (file && (() => { try { return readFileSync(file + '.pub', 'utf8').trim(); } catch { return undefined; } })() || undefined);
-            entry = { name, host, user, port, auth: 'key', secret: key, ...(passphrase ? { passphrase } : {}), ...(pub ? { publicKey: pub } : {}) };
+            entry = { name, host, user, port, auth: 'key', secret: key, ...(passphrase ? { passphrase } : {}), ...(pub ? { publicKey: pub } : {}), policy: policyFromFlags() };
             if (file) process.stderr.write(`Note: ${file} still holds the key in plain text. Once you've checked it works (lllanyard ssh ${name}), delete that file.\n`);
           }
           const m = ssh.set(entry, limit());
@@ -561,7 +610,7 @@ async function main() {
           assertSshName(name);
           const { host, user } = splitHost(str(flags.host) ?? fail('Give the server with --host (host, or user@host).'), str(flags.user));
           const { privateKey, publicKey } = generateKey(str(flags.comment) ?? `lllanyard-${name}`);
-          const m = ssh.set({ name, host, user, port: str(flags.port) ? Number(str(flags.port)) : 22, auth: 'key', secret: privateKey, publicKey }, limit());
+          const m = ssh.set({ name, host, user, port: str(flags.port) ? Number(str(flags.port)) : 22, auth: 'key', secret: privateKey, publicKey, policy: policyFromFlags() }, limit());
           out(`Created an ed25519 key for ssh:${m.name}; the private half is in your keychain and was never written to a file.`);
           out('Add this public key to ~/.ssh/authorized_keys on the server:\n');
           out(publicKey);
@@ -570,11 +619,22 @@ async function main() {
         case 'list': {
           const all = ssh.list();
           if (!all.length) return out('No SSH logins stored. Add one with: lllanyard ssh add <name> --host HOST');
-          for (const m of all) out(`${m.name.padEnd(20)} ${`${m.user}@${m.host}${m.port === 22 ? '' : ':' + m.port}`.padEnd(36)} ${m.auth}${m.hasPassphrase ? '+passphrase' : ''}  added ${day(m.createdAt)}`);
+          for (const m of all) out(`${m.name.padEnd(20)} ${`${m.user}@${m.host}${m.port === 22 ? '' : ':' + m.port}`.padEnd(36)} ${m.auth}${m.hasPassphrase ? '+passphrase' : ''}  added ${day(m.createdAt)}${m.policy ? `  [${describePolicy(m.policy)}]` : ''}`);
           return;
         }
         case 'remove':
           return out(ssh.remove(need(pos[1], 'Usage: lllanyard ssh remove <name>')) ? `Removed ssh:${pos[1]}` : 'Nothing to remove.');
+        case 'policy': {
+          const e = login(need(pos[1], 'Usage: lllanyard ssh policy <name> [--allow "cmd"]... [--confirm | --no-confirm] [--expires 30d | DATE | none] [--clear]'));
+          const changing = Boolean(multi.allow?.length || flags.confirm || flags['no-confirm'] || str(flags.expires) || flags.clear);
+          if (changing) {
+            const next = flags.clear ? undefined : policyFromFlags(e.policy);
+            const { policy: _old, ...rest } = e;
+            ssh.set({ ...rest, ...(next ? { policy: next } : {}) });
+          }
+          const now = ssh.get(e.name)!.policy;
+          return out(now ? `${e.name}: ${describePolicy(now)}` : `${e.name}: no limits (any command, shell and scp allowed, no confirmation).`);
+        }
         case 'pubkey': {
           const e = login(need(pos[1], 'Usage: lllanyard ssh pubkey <name>'));
           return out(e.auth === 'key' ? e.publicKey ?? fail('No public key was saved for this login.') : fail('That login uses a password.'));
@@ -584,13 +644,13 @@ async function main() {
           const names = need(pos[1], 'Usage: lllanyard ssh with <name>[,<name>] -- <command> [args...]').split(',').filter(Boolean);
           if (!tail.length) fail('Give the command after --, e.g.  lllanyard ssh with prod -- scp ./app.tar.gz prod-user@host:/srv/');
           const entries = names.map(login);
-          return run(entries, () => ({ command: tail[0]!, args: tail.slice(1) }), `with ${names.join(',')}: ${path.basename(tail[0]!)}`);
+          return run(entries, () => ({ command: tail[0]!, args: tail.slice(1) }), `with ${names.join(',')}: ${path.basename(tail[0]!)}`, { kind: 'with' });
         }
         default: {
           // lllanyard ssh <name> [-- remote command]: an ssh session
           const name = sub === 'connect' ? need(pos[1], 'Usage: lllanyard ssh <name> [-- remote command]') : sub;
           const e = login(name);
-          return run([e], (s) => ({ command: 'ssh', args: sshArgs(e, s, tail) }), `connect ${e.name}`);
+          return run([e], (s) => ({ command: 'ssh', args: sshArgs(e, s, tail) }), `connect ${e.name}`, tail.length ? { kind: 'command', command: tail.join(' ') } : { kind: 'shell' });
         }
       }
     }
@@ -740,6 +800,8 @@ async function main() {
             run: (name, command) => {
               const next = queue.then(async () => {
                 const entry = new SshStore().get(name) ?? fail(`No SSH login "${name}".`);
+                const bad = checkSshPolicy(entry, { kind: 'command', command });
+                if (bad) { createUsageLog().write({ ts: new Date().toISOString(), event: 'mcp-ssh', tool: `${entry.name}: ${command.slice(0, 200)}`, decision: 'deny', keys: [`ssh:${entry.name}`] }); throw new Error(bad); }
                 const allowed = await confirmDialog(describeSshRun(entry, command));
                 createUsageLog().write({ ts: new Date().toISOString(), event: 'mcp-ssh', tool: `${entry.name}: ${command.slice(0, 200)}`, decision: allowed ? 'allow' : 'deny', keys: [`ssh:${entry.name}`] });
                 return allowed ? runSshCommand(entry, command, { timeoutSec: timeout }) : null;
@@ -970,11 +1032,11 @@ async function main() {
     case 'setup': {
       const app = pos[0];
       if (!app) {
-        const d = claudeDesktopStatus(), c = claudeCodeStatus();
-        out(`Claude Desktop  ${d.connected ? `connected${d.scriptDirs.length ? `; scripts in ${d.scriptDirs.join(', ')} run after a dialog` : ''}` : 'not connected'}   (${d.file})`);
-        if (d.problem) out(`                ${d.problem}`);
-        out(`Claude Code     ${c.connected ? 'connected' : 'not connected'}   (${c.file})`);
-        return out('\nConnect with: lllanyard setup claude-desktop [--scripts-dir DIR]   or   lllanyard setup claude-code');
+        const d = claudeDesktopStatus();
+        out(`${'Claude Desktop'.padEnd(20)}${d.connected ? `connected${d.scriptDirs.length ? `; scripts in ${d.scriptDirs.join(', ')} run after a dialog` : ''}` : 'not connected'}`);
+        if (d.problem) out(`${' '.repeat(20)}${d.problem}`);
+        for (const a of APPS) { const st = a.status(); out(`${a.name.padEnd(20)}${st.connected ? `connected${st.detail ? `, ${st.detail}` : ''}` : a.installed() ? 'installed, not connected' : 'not connected'}`); }
+        return out(`\nConnect with: lllanyard setup <claude-desktop | ${APPS.map((a) => a.id).join(' | ')} | agent> [--remove]   (copilot also takes --project DIR)`);
       }
       if (app === 'claude-desktop') {
         // Claude Desktop saves its settings over ours when it quits, so change them only while it's closed.
@@ -992,11 +1054,62 @@ async function main() {
         return out(restarted ? 'Claude Desktop was restarted and has loaded it.' : 'Open Claude Desktop to use it.');
       }
       if (app === 'claude-code') {
-        if (flags.remove) { const r = disconnectClaudeCode(); return out(r.removed ? `Removed the LLLanyard section from ${r.file}.` : 'Claude Code was not connected.'); }
+        // Another Claude Code profile (a different CLAUDE_CONFIG_DIR): the same setup, pointed at that folder.
+        if (flags['config-dir'] === '' || flags['config-dir'] === true) return fail('Give the profile folder: lllanyard setup claude-code --config-dir ~/.claude-work');
+        const profile = str(flags['config-dir']);
+        if (profile) process.env.CLAUDE_CONFIG_DIR = path.resolve(profile.replace(/^~(?=[\\/]|$)/, os.homedir()));
+        if (flags.remove) {
+          const r = disconnectClaudeCode(), h = disconnectClaudeHooks();
+          if (h.removed) out(`Removed the LLLanyard hook from ${h.file}.`);
+          return out(r.removed ? `Removed the LLLanyard section from ${r.file}.` : h.removed ? '' : 'Claude Code was not connected.');
+        }
         const r = connectClaudeCode();
-        return out(`Claude Code will use lllanyard exec for keys: added to ${r.file}${r.backup ? ` (old file kept as ${r.backup})` : ''}. New sessions pick it up.`);
+        out(`Claude Code will use lllanyard exec for keys: added to ${r.file}${r.backup ? ` (old file kept as ${r.backup})` : ''}. New sessions pick it up.`);
+        if (flags.hooks) {
+          const h = connectClaudeHooks(launch());
+          return out(`Hook added to ${h.file}${h.backup ? ` (old file kept as ${h.backup})` : ''}: Claude Code now refuses to read .env files, SSH keys and credential files, and says to use lllanyard instead. Remove it with: lllanyard setup claude-code --remove`);
+        }
+        return out('To also make Claude Code refuse to read .env files and SSH keys (not just ask it not to), run: lllanyard setup claude-code --hooks');
       }
-      return fail('Usage: lllanyard setup [claude-desktop [--scripts-dir DIR] | claude-code] [--remove]');
+      if (app === 'copilot') {
+        if (flags.project === '' || flags.project === true) return fail('Give the project folder: lllanyard setup copilot --project .');
+        const dir = str(flags.project);
+        if (dir) {
+          const root = path.resolve(dir);
+          if (flags.remove) { const r = disconnectCopilotProject(root); return out(r.removed ? `Removed LLLanyard from ${r.files.join(' and ')}.` : 'Copilot was not connected for that project.'); }
+          const r = connectCopilotProject(root);
+          out(`Connected Copilot for ${root}: ${r.files.join(' and ')}${r.backups.length ? ` (old files kept as ${r.backups.join(' and ')})` : ''}.`);
+          return out('VS Code Copilot Chat reads both files. Both can be committed: they name `lllanyard`, not paths on this computer, so each person still needs LLLanyard and their own keys.');
+        }
+      }
+      if (app === 'agent') {
+        if (flags.file === '' || flags.file === true) return fail('Give the file: lllanyard setup agent --file AGENTS.md');
+        const file = path.resolve(str(flags.file) ?? 'AGENTS.md');
+        if (flags.remove) { const r = disconnectAgentFile(file); return out(r.removed ? `Removed the LLLanyard section from ${r.file}.` : `${file} had no LLLanyard section.`); }
+        const r = connectAgentFile(file);
+        out(`Added the LLLanyard instructions to ${r.file}${r.backup ? ` (old file kept as ${r.backup})` : ''}. Most agents read AGENTS.md; for one that reads a different file, run again with --file.`);
+        out('\nIf the agent supports MCP, add this to its MCP settings (adjust the "mcpServers" key if it uses another):\n');
+        return out(genericMcpSnippet());
+      }
+      const info = findApp(app);
+      if (info) {
+        if (flags.remove) { const r = info.disconnect(); return out(r.removed ? `Removed LLLanyard from ${r.files.join(' and ')}.` : `${info.name} was not connected.`); }
+        const r = info.connect(launch());
+        out(`Connected ${info.name}: ${r.files.join(' and ')}${r.backups.length ? ` (old files kept as ${r.backups.join(' and ')})` : ''}. Start a new session.`);
+        return out(r.note ?? (app === 'copilot' ? 'For VS Code Copilot Chat in a project, run: lllanyard setup copilot --project <folder>' : ''));
+      }
+      return fail(`Usage: lllanyard setup [claude-desktop [--scripts-dir DIR] | ${APPS.map((a) => a.id).join(' | ')} | agent [--file FILE]] [--remove]   (copilot also takes --project DIR)`);
+    }
+    case 'hook': {
+      // Called by an AI tool before it runs a tool: `lllanyard hook claude-code`, the call as JSON on stdin. Prints a refusal
+      // as JSON, or nothing to let it through. It never fails the tool call: anything it can't read is let through.
+      if (pos[0] !== 'claude-code') return fail('Usage: lllanyard hook claude-code  (it is run by Claude Code; set it up with: lllanyard setup claude-code --hooks)');
+      let raw = '';
+      for await (const c of process.stdin) raw += c;
+      let reason: string | null = null;
+      try { reason = checkToolCall(JSON.parse(raw)); } catch { /* let it through */ }
+      if (reason) process.stdout.write(denyResponse(reason) + '\n');
+      return;
     }
     case 'doctor': {
       const b = backendKind() === 'file' ? defaultBackend() : new KeyringBackend();

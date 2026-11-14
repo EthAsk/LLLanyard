@@ -5,7 +5,7 @@ import path from 'node:path';
 import {
   AgentStore, TeamStore, SshStore, generateKey, assertSshName, FREE_LIMITS, KeyringStore, LicenseStore, ProviderStore, StoreError, allProviders, askLocalModel, assertLocalEndpoint, backendKind,
   buildFacts, defaultBackend, readUsage, rotationStatus, ruleBasedReview, sandboxSelfTest, summarize, usageLogPath, DEFAULT_ASSISTANT,
-  type AssistantConfig, type Launch, withClaudeDesktopClosed, claudeDesktopRunning, canRestartClaudeDesktop, claudeCodeStatus, claudeDesktopStatus, connectClaudeCode, connectClaudeDesktop, disconnectClaudeCode, disconnectClaudeDesktop, ToolStore, createBackup, describeItem, findCommand, pinScript, pinFiles, bindingsForKeys, readBackup, restoreBackup,
+  type AssistantConfig, type Launch, withClaudeDesktopClosed, claudeDesktopRunning, canRestartClaudeDesktop, claudeCodeStatus, claudeDesktopStatus, connectClaudeCode, connectClaudeDesktop, APPS, findApp, disconnectClaudeCode, disconnectClaudeDesktop, ToolStore, createBackup, describeItem, findCommand, pinScript, pinFiles, bindingsForKeys, readBackup, restoreBackup,
 } from '@lllanyard/core';
 import { startProxy } from '@lllanyard/proxy';
 import { createUiServer, type UiDeps } from './server.js';
@@ -52,7 +52,7 @@ export function realDeps(opts: { proxyPort: number; launch?: Launch }): UiDeps {
         sandbox,
         assistant: loadCfg(),
         freeLimits: FREE_LIMITS,
-        apps: { claudeDesktop: { ...claudeDesktopStatus(), running: claudeDesktopRunning(), canRestart: canRestartClaudeDesktop() }, claudeCode: claudeCodeStatus(), canConnect: Boolean(opts.launch) },
+        apps: { claudeDesktop: { ...claudeDesktopStatus(), running: claudeDesktopRunning(), canRestart: canRestartClaudeDesktop() }, claudeCode: claudeCodeStatus(), others: APPS.filter((a) => a.id !== 'claude-code').map((a) => ({ id: a.id, name: a.name, summary: a.summary, installed: a.installed(), connected: a.status().connected })), canConnect: Boolean(opts.launch) },
       };
     },
     addKey: (b) => { keys().set(b.provider, b.secret, { label: b.label, rotateAfterDays: b.rotateDays, envName: b.envName }); },
@@ -106,6 +106,12 @@ export function realDeps(opts: { proxyPort: number; launch?: Launch }): UiDeps {
     removeTool: (n) => new ToolStore().remove(n),
     setup: async (b) => {
       if (b.app === 'claude-code') return b.remove ? disconnectClaudeCode() : connectClaudeCode();
+      if (b.app !== 'claude-desktop') {
+        const info = findApp(b.app) ?? (() => { throw new StoreError('Unknown app'); })();
+        if (b.remove) return info.disconnect();
+        if (!opts.launch) throw new StoreError('Start the app with `lllanyard ui` to connect this tool.');
+        return info.connect(opts.launch);
+      }
       if (b.remove) return withClaudeDesktopClosed(() => disconnectClaudeDesktop(), { restart: b.restart });
       const launch = opts.launch;
       if (!launch) throw new StoreError('Start the app with `lllanyard ui` to connect Claude Desktop.');

@@ -19,3 +19,6 @@ export * from './claude-app.js';
 export * from './team.js';
 export * from './devices.js';
 export * from './ssh.js';
+export * from './hook.js';
+export * from './apps.js';
+export * from './audit.js';

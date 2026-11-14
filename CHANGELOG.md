@@ -1,9 +1,31 @@
 # Changelog
 
-Each release of LLLanyard and what changed in it. Versions follow [semantic versioning](https://semver.org): while
-LLLanyard is 0.x, a new minor version (0.2.0) can change behaviour, and a patch (0.1.5) is for fixes and security updates.
+Each release of LLLanyard and what changed in it. Versions follow [semantic versioning](https://semver.org): a new major
+version (2.0.0) can change behaviour, a minor version (1.1.0) adds features, and a patch (1.0.1) is for fixes and security
+updates.
 
 ## Unreleased
+
+## 1.0.0 (14 November 2026)
+
+The first stable release. Your stored keys, SSH logins and settings carry over unchanged. One small change: `policy` is now
+a reserved word in `lllanyard ssh`, so a login can't be called that (rename it with `ssh add` and `ssh remove` if you have one).
+
+New in this release:
+
+- Limits on an SSH login: `--allow "cmd"` (only these commands; no shell, `scp`, or shell operators), `--confirm` (a dialog
+  before every use, even from a terminal) and `--expires 30d`. `lllanyard ssh policy <name>` shows or changes them.
+  They apply to `lllanyard ssh`, `ssh with` and Claude Desktop's `ssh_run`.
+- `lllanyard setup claude-code --hooks` makes Claude Code refuse to read `.env` files, SSH private keys and credential
+  files, instead of only asking it not to.
+- `lllanyard audit` shows what an AI agent on your computer could still get at (plaintext keys, SSH keys on disk, AI
+  tools that aren't set up) and how to fix each. Exit code 1 if anything needs fixing; `--json` for scripts.
+- Connect more AI tools with one command. `lllanyard setup codex` (OpenAI Codex CLI and IDE extension),
+  `copilot` (GitHub Copilot CLI), `copilot --project DIR` (VS Code Copilot Chat), `gemini` (Gemini CLI), `windsurf` and
+  `cursor` add the instructions to use `lllanyard exec` / `lllanyard ssh` and the LLLanyard MCP server, and `--remove`
+  undoes it. `lllanyard setup agent` does the same for any other agent: it adds the instructions to a file (default
+  `AGENTS.md`) and prints the MCP snippet to paste. `setup` with no arguments shows all of them, and the app's Connect
+  AI apps panel lists them too.
 
 ## 0.2.0 (12 November 2026)
 

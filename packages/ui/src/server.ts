@@ -19,7 +19,7 @@ export interface UiDeps {
   addTool: (b: { name: string; command: string; args: string[]; env: Record<string, string>; keys: string[]; pins: string[]; allowArgs: boolean; passEnv: string[]; allowHosts: string[] }) => unknown;
   setKeyEnv: (b: { provider: string; label: string; envName?: string }) => void;
   removeTool: (name: string) => boolean;
-  setup: (b: { app: 'claude-desktop' | 'claude-code'; remove: boolean; restart: boolean; scriptDirs: string[] }) => unknown; // connect an AI app
+  setup: (b: { app: string; remove: boolean; restart: boolean; scriptDirs: string[] }) => unknown; // connect an AI app
   backup: (passphrase: string) => { file: string; items: string[] }; // writes the encrypted file; returns where and what
   restore: (b: { text: string; passphrase: string; overwrite: boolean; dryRun: boolean }) => unknown;
   addSsh: (b: { name: string; host: string; user: string; port: number; auth: 'key' | 'password'; secret: string; passphrase?: string }) => void;
@@ -147,7 +147,7 @@ export function createUiServer(deps: UiDeps, token = randomBytes(32).toString('b
         }
         case 'POST /api/setup': {
           const b = await readBody();
-          if (b.app !== 'claude-desktop' && b.app !== 'claude-code') return json(res, 400, { error: 'Unknown app' });
+          if (typeof b.app !== 'string' || b.app.length > 40) return json(res, 400, { error: 'Unknown app' });
           return json(res, 200, { result: await deps.setup({ app: b.app, remove: b.remove === true, restart: b.restart === true, scriptDirs: list(b.scriptDirs, 20, 1000) }) });
         }
         case 'DELETE /api/tools': { const b = await readBody(); return json(res, 200, { ok: deps.removeTool(s(b.name, 64)) }); }

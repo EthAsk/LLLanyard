@@ -1,6 +1,6 @@
 {
   "name": "@lllanyard/core",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "LLLanyard core: keychain vault, placeholder tokens and licensing.",
   "type": "module",
   "main": "dist/index.js",

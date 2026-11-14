@@ -102,3 +102,11 @@ test('dialog: only an explicit Run counts; the message is passed as data', async
   assert.equal(await confirmDialog('m', { platform: 'linux', spawnFn: fakeSpawn('', 1) }), false);
   assert.equal(await confirmDialog('m', { platform: 'linux', spawnFn: (() => { throw new Error('no zenity'); }) as any }), false);
 });
+
+test('dialog: on Windows the text names the Yes button, not Run; other systems are unchanged', async () => {
+  const seen: any = {};
+  await confirmDialog('Only click Run if you expect this command.', { platform: 'win32', spawnFn: fakeSpawn('', 0, seen) });
+  assert.equal(seen.env.LLY_MSG, 'Only click Yes if you expect this command.');
+  await confirmDialog('Only click Run if you expect this command.', { platform: 'linux', spawnFn: fakeSpawn('', 0, seen) });
+  assert.match(seen.args.join(' '), /Only click Run if you expect this command\./);
+});

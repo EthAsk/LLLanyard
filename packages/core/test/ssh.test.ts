@@ -179,3 +179,61 @@ test('ssh: the confirmation dialog shows the login and the exact command', () =>
   assert.match(t, /prod \(deploy@prod\.example\.com:2222\)/);
   assert.match(t, /Command: sudo systemctl restart app/);
 });
+
+import { checkSshPolicy, describePolicy, parseExpiry, validatePolicy } from '../src/index.js';
+
+test('policy: no policy means no limits', () => {
+  assert.equal(checkSshPolicy({ name: 'p' }, { kind: 'shell' }), null);
+  assert.equal(checkSshPolicy({ name: 'p' }, { kind: 'command', command: 'anything; goes' }), null);
+});
+
+test('policy: an allow-list matches whole commands only, and * never crosses a shell operator', () => {
+  const e = { name: 'prod', policy: { allow: ['uptime', 'df -h', 'systemctl status *'] } };
+  const ok = (command: string) => checkSshPolicy(e, { kind: 'command', command });
+  assert.equal(ok('uptime'), null);
+  assert.equal(ok('  df   -h '), null); // spaces are tidied
+  assert.equal(ok('systemctl status nginx'), null);
+  assert.match(ok('uptime -p')!, /isn't one of the commands allowed/); // not a prefix match
+  assert.match(ok('systemctl restart nginx')!, /isn't one of/);
+  for (const bad of ['uptime; rm -rf /', 'uptime && id', 'uptime | sh', 'systemctl status $(id)', 'systemctl status `id`', 'uptime > /etc/x', 'uptime\nid', 'systemctl status a\;b'])
+    assert.match(ok(bad)!, /only runs plain commands/, bad);
+  assert.match(ok('')!, /isn't one of/);
+});
+
+test('policy: an allow-list rules out shells and scp/rsync/git', () => {
+  const e = { name: 'prod', policy: { allow: ['uptime'] } };
+  assert.match(checkSshPolicy(e, { kind: 'shell' })!, /can't open a shell/);
+  assert.match(checkSshPolicy(e, { kind: 'with' })!, /scp, rsync or git/);
+});
+
+test('policy: expiry, and wildcard characters in a pattern are literal otherwise', () => {
+  const now = new Date('2026-11-13T12:00:00Z');
+  assert.match(checkSshPolicy({ name: 'p', policy: { expires: '2026-11-13T11:00:00Z' } }, { kind: 'shell' }, now)!, /expired on 2026-11-13/);
+  assert.equal(checkSshPolicy({ name: 'p', policy: { expires: '2026-11-14T00:00:00Z' } }, { kind: 'shell' }, now), null);
+  const e = { name: 'p', policy: { allow: ['ls a.b'] } };
+  assert.equal(checkSshPolicy(e, { kind: 'command', command: 'ls a.b' }), null);
+  assert.match(checkSshPolicy(e, { kind: 'command', command: 'ls aXb' })!, /isn't one of/); // "." is not a wildcard
+});
+
+test('policy: validation and expiry parsing', () => {
+  assert.throws(() => validatePolicy({ allow: ['ls; id'] }), /shell operator/);
+  assert.throws(() => validatePolicy({ allow: [''] }), /1-200/);
+  assert.throws(() => validatePolicy({ expires: 'soon' }), /expiry/);
+  assert.equal(validatePolicy({ allow: [], confirm: false }), undefined);
+  assert.deepEqual(validatePolicy({ allow: [' uptime  -p '], confirm: true }), { allow: ['uptime -p'], confirm: true });
+  const now = new Date('2026-11-13T00:00:00Z');
+  assert.equal(parseExpiry('30d', now), '2026-12-13T00:00:00.000Z');
+  assert.equal(parseExpiry('12h', now), '2026-11-13T12:00:00.000Z');
+  assert.equal(parseExpiry('2026-12-31', now), '2026-12-31T00:00:00.000Z');
+  assert.throws(() => parseExpiry('never'), /Give an expiry/);
+  assert.equal(describePolicy({ allow: ['a', 'b'], confirm: true, expires: '2026-12-31T00:00:00.000Z' }), 'only: a | b; asks each time; expires 2026-12-31');
+  assert.equal(describePolicy(undefined), '');
+});
+
+test('policy: stored with the login, and a login called "policy" is reserved', () => {
+  const store = new SshStore(new MemoryBackend());
+  const m = store.set({ name: 'prod', host: 'h', user: 'u', port: 22, auth: 'password', secret: 'pw', policy: { allow: ['uptime'], confirm: true } });
+  assert.deepEqual(m.policy, { allow: ['uptime'], confirm: true });
+  assert.deepEqual(store.get('prod')!.policy, { allow: ['uptime'], confirm: true });
+  assert.throws(() => store.set({ name: 'policy', host: 'h', user: 'u', port: 22, auth: 'password', secret: 'pw' }), /lllanyard ssh command/);
+});

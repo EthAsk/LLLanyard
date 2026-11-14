@@ -90,8 +90,10 @@ export async function scan(opts: ScanOptions): Promise<Finding[]> {
 
 export function defaultRoots(cwd = process.cwd(), home = os.homedir()): string[] {
   const h = (...p: string[]) => path.join(home, ...p);
+  // From the home folder itself (where a Windows prompt starts) there is no project to search: the files below cover it.
+  const project = path.resolve(cwd) === path.resolve(home) ? [] : [cwd];
   return [
-    cwd,
+    ...project,
     h('.zshrc'), h('.zprofile'), h('.bashrc'), h('.bash_profile'), h('.profile'), h('.config', 'fish', 'config.fish'),
     h('.claude.json'), h('.claude', 'settings.json'), h('.cursor', 'mcp.json'),
     h('Library', 'Application Support', 'Claude', 'claude_desktop_config.json'),

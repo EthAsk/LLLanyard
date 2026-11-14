@@ -17,3 +17,6 @@ license-private*
 # Copied in by prepack for npm
 packages/*/LICENSE.md
 packages/cli/README.md
+
+# Claude Code per-machine settings
+.claude/settings.local.json

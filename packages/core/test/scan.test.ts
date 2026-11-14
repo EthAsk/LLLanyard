@@ -57,3 +57,12 @@ test('redactFile: replaces key atomically, keeps permissions, leaves no temp or 
   assert.deepEqual(await fs.readdir(d), ['.env']);
   assert.equal((await scan({ roots: [d] })).length, 0);
 });
+
+import { defaultRoots } from '../src/index.js';
+
+test('defaultRoots: the current folder is searched, except when it is the home folder (which scan refuses)', () => {
+  assert.equal(defaultRoots('/work/app', '/Users/me')[0], '/work/app');
+  const fromHome = defaultRoots('/Users/me', '/Users/me');
+  assert.ok(!fromHome.includes('/Users/me'));
+  assert.ok(fromHome.length > 5 && fromHome.some((r) => r.endsWith('.zshrc')));
+});
