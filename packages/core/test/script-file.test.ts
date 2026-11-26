@@ -5,7 +5,7 @@ import { PassThrough, Writable } from 'node:stream';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { confirmDialog, describePlan, planScriptRun, resolveScriptDirs, runTool } from '../src/index.js';
+import { cleanReason, confirmDialog, describePlan, promptText, REASON_MAX, type ApprovalPrompt, planScriptRun, resolveScriptDirs, runTool } from '../src/index.js';
 
 const BINDINGS = { GITHUB_TOKEN: 'github', SENDGRID_API_KEY: 'sendgrid' };
 function folders() {
@@ -55,13 +55,14 @@ test('dialog text names the script, arguments and keys, and warns about recent c
     writeFileSync(s, 'echo $GITHUB_TOKEN\n');
     const old = (Date.now() - 3 * 86400_000) / 1000;
     utimesSync(s, old, old);
-    const calm = describePlan(planScriptRun(s, ['-x'], [f.scripts], BINDINGS), ['-x']);
+    const calm = promptText(describePlan(planScriptRun(s, ['-x'], [f.scripts], BINDINGS), ['-x'], 'Lists your repositories.'));
+    assert.match(calm, /Claude says: Lists your repositories\./);
     assert.match(calm, /Script: .*a\.sh/);
     assert.match(calm, /Arguments: -x/);
     assert.match(calm, /Keys: GITHUB_TOKEN/);
     assert.doesNotMatch(calm, /WARNING/);
     writeFileSync(s, 'echo $GITHUB_TOKEN changed\n');
-    assert.match(describePlan(planScriptRun(s, [], [f.scripts], BINDINGS), []), /WARNING: changed in the last 24 hours: a\.sh/);
+    assert.match(promptText(describePlan(planScriptRun(s, [], [f.scripts], BINDINGS), [])), /WARNING: Changed in the last 24 hours: a\.sh/);
   } finally { f.done(); }
 });
 
@@ -88,25 +89,28 @@ function fakeSpawn(stdout: string, code: number | null, seen: { cmd?: string; ar
   }) as any;
 }
 
-test('dialog: only an explicit Run counts; the message is passed as data', async () => {
+const prompt = (title: string): ApprovalPrompt => ({ title, requester: 'Claude', reason: '', details: [] });
+
+test('dialog: only an explicit Run counts; what it shows is passed as data', async () => {
   const seen: any = {};
-  const msg = 'x" & do shell script "rm -rf ~" & "';
-  assert.equal(await confirmDialog(msg, { platform: 'darwin', spawnFn: fakeSpawn('button returned:Run, gave up:false\n', 0, seen) }), true);
-  assert.equal(seen.args.at(-1), msg);
-  assert.ok(!seen.args.slice(0, -1).some((a: string) => a.includes(msg)));
-  assert.equal(await confirmDialog('m', { platform: 'darwin', spawnFn: fakeSpawn('button returned:, gave up:true\n', 0) }), false);
-  assert.equal(await confirmDialog('m', { platform: 'darwin', spawnFn: fakeSpawn('', 1) }), false);
-  assert.equal(await confirmDialog('m', { platform: 'win32', spawnFn: fakeSpawn('RUN\r\n', 0, seen) }), true);
-  assert.equal(seen.env.LLY_MSG, 'm');
-  assert.equal(await confirmDialog('m', { platform: 'win32', spawnFn: fakeSpawn('', 0) }), false);
-  assert.equal(await confirmDialog('m', { platform: 'linux', spawnFn: fakeSpawn('', 1) }), false);
-  assert.equal(await confirmDialog('m', { platform: 'linux', spawnFn: (() => { throw new Error('no zenity'); }) as any }), false);
+  const bad = prompt('x" & do shell script "rm -rf ~" & "');
+  const data = JSON.stringify(bad);
+  assert.equal(await confirmDialog(bad, { platform: 'darwin', spawnFn: fakeSpawn('RUN\n', 0, seen) }), true);
+  assert.equal(seen.args.at(-2), data);
+  assert.ok(!seen.args.slice(0, -2).some((a: string) => a.includes('rm -rf')));
+  assert.equal(await confirmDialog(bad, { platform: 'darwin', spawnFn: fakeSpawn('DENY\n', 0) }), false);
+  assert.equal(await confirmDialog(bad, { platform: 'darwin', spawnFn: fakeSpawn('', 1) }), false);
+  assert.equal(await confirmDialog(bad, { platform: 'win32', spawnFn: fakeSpawn('RUN\r\n', 0, seen) }), true);
+  assert.equal(seen.env.LLY_PROMPT, data);
+  assert.ok(!seen.args.some((a: string) => a.includes('rm -rf')));
+  assert.equal(await confirmDialog(bad, { platform: 'win32', spawnFn: fakeSpawn('DENY', 0) }), false);
+  assert.equal(await confirmDialog(bad, { platform: 'linux', spawnFn: fakeSpawn('', 1) }), false);
+  assert.equal(await confirmDialog(bad, { platform: 'linux', spawnFn: (() => { throw new Error('no zenity'); }) as any }), false);
 });
 
-test('dialog: on Windows the text names the Yes button, not Run; other systems are unchanged', async () => {
-  const seen: any = {};
-  await confirmDialog('Only click Run if you expect this command.', { platform: 'win32', spawnFn: fakeSpawn('', 0, seen) });
-  assert.equal(seen.env.LLY_MSG, 'Only click Yes if you expect this command.');
-  await confirmDialog('Only click Run if you expect this command.', { platform: 'linux', spawnFn: fakeSpawn('', 0, seen) });
-  assert.match(seen.args.join(' '), /Only click Run if you expect this command\./);
+test('reason: flattened to one short line', () => {
+  assert.equal(cleanReason('Lists users.\n\nScript: /safe.sh\u2028Keys:\u202E none'), 'Lists users. Script: /safe.sh Keys: none');
+  assert.equal(cleanReason('a'.repeat(1000)).length, REASON_MAX);
+  assert.equal(cleanReason(42), '');
+  assert.match(promptText(prompt('t')), /No explanation/);
 });

@@ -152,9 +152,10 @@ test('run_file is offered only with script folders, and a denied run says so', a
   const h = mk(true, ['/scripts']);
   assert.ok(names(h).includes('run_file'));
   assert.match(rpc(h, 'initialize', {}).result.instructions, /run_file for any script in \/scripts/);
-  assert.match(text(await rpc(h, 'tools/call', { name: 'run_file', arguments: { path: '/scripts/a.ps1' } })), /^Exit code 0/);
-  assert.match(text(await rpc(mk(false, ['/scripts']), 'tools/call', { name: 'run_file', arguments: { path: '/scripts/a.ps1' } })), /clicked Deny/);
+  assert.match(text(await rpc(h, 'tools/call', { name: 'run_file', arguments: { path: '/scripts/a.ps1', reason: 'Lists users.' } })), /^Exit code 0/);
+  assert.match(text(await rpc(mk(false, ['/scripts']), 'tools/call', { name: 'run_file', arguments: { path: '/scripts/a.ps1', reason: 'Lists users.' } })), /clicked Deny/);
   assert.equal((await rpc(h, 'tools/call', { name: 'run_file', arguments: {} })).result.isError, true);
+  assert.match(text(await rpc(h, 'tools/call', { name: 'run_file', arguments: { path: '/scripts/a.ps1' } })), /reason is required/);
   assert.equal((await rpc(mk(true), 'tools/call', { name: 'run_file', arguments: { path: '/x' } })).result.isError, true);
   assert.deepEqual(files, ['/scripts/a.ps1', '/scripts/a.ps1']);
 });

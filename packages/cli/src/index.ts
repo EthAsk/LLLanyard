@@ -562,7 +562,7 @@ async function main() {
         for (const e of entries) {
           const bad = checkSshPolicy(e, use);
           if (bad) fail(bad);
-          if (e.policy?.confirm && !(await confirmDialog(describeSshRun(e, use.kind === 'command' ? use.command : use.kind === 'with' ? `(a program using this login: ${what})` : '(an interactive shell)', 'A program on this computer'))))
+          if (e.policy?.confirm && !(await confirmDialog(describeSshRun(e, use.kind === 'command' ? use.command : use.kind === 'with' ? `(a program using this login: ${what})` : '(an interactive shell)', str(flags.reason), 'A program on this computer'))))
             fail(`Not run: the confirmation for "${e.name}" was denied, timed out or could not be shown.`);
         }
         const session = await openSshSession(entries).catch((e: Error) => fail(e.message));
@@ -797,12 +797,12 @@ async function main() {
           scriptDirs,
           ssh: {
             list: () => new SshStore().list().map((m) => ({ name: m.name, target: `${m.user}@${m.host}${m.port === 22 ? '' : ':' + m.port}`, auth: m.auth })),
-            run: (name, command) => {
+            run: (name, command, reason) => {
               const next = queue.then(async () => {
                 const entry = new SshStore().get(name) ?? fail(`No SSH login "${name}".`);
                 const bad = checkSshPolicy(entry, { kind: 'command', command });
                 if (bad) { createUsageLog().write({ ts: new Date().toISOString(), event: 'mcp-ssh', tool: `${entry.name}: ${command.slice(0, 200)}`, decision: 'deny', keys: [`ssh:${entry.name}`] }); throw new Error(bad); }
-                const allowed = await confirmDialog(describeSshRun(entry, command));
+                const allowed = await confirmDialog(describeSshRun(entry, command, reason));
                 createUsageLog().write({ ts: new Date().toISOString(), event: 'mcp-ssh', tool: `${entry.name}: ${command.slice(0, 200)}`, decision: allowed ? 'allow' : 'deny', keys: [`ssh:${entry.name}`] });
                 return allowed ? runSshCommand(entry, command, { timeoutSec: timeout }) : null;
               });
@@ -810,10 +810,10 @@ async function main() {
               return next;
             },
           },
-          runFile: (file, args) => {
+          runFile: (file, args, reason) => {
             const next = queue.then(async () => {
               const plan = planScriptRun(file, args, scriptDirs, bindingsForAllKeys(ks), { pathVar: process.env.PATH });
-              const allowed = await confirmDialog(describePlan(plan, args));
+              const allowed = await confirmDialog(describePlan(plan, args, reason));
               createUsageLog().write({ ts: new Date().toISOString(), event: 'mcp-file', tool: plan.script, decision: allowed ? 'allow' : 'deny', keys: Object.keys(plan.env) });
               if (!allowed) return null;
               const { script, helpers, modifiedRecently, ...def } = plan;

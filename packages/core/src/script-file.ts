@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { MAC_PROMPT, promptText, WIN_PROMPT, type ApprovalPrompt } from './prompt-window.js';
+import { cleanReason } from './reason.js';
 import { StoreError } from './storage/keyring-store.js';
 import { fileSha256, findCommand, neededEnv } from './tools.js';
 
@@ -77,42 +79,45 @@ export function planScriptRun(
   };
 }
 
-/** The text of the confirmation dialog. */
-export function describePlan(p: ScriptPlan, extra: string[], requester = 'Claude'): string {
-  const lines = [
-    `${requester} wants to run a script with your API keys.`, '',
-    `Script: ${p.script}`,
-    `Arguments: ${extra.length ? extra.join(' ') : '(none)'}`,
-    `Keys: ${Object.keys(p.env).join(', ') || '(none)'}`,
-  ];
-  if (p.helpers.length) lines.push(`Also loads: ${p.helpers.map((f) => path.basename(f)).join(', ')}`);
-  if (p.modifiedRecently.length) lines.push('', `WARNING: changed in the last 24 hours: ${p.modifiedRecently.map((f) => path.basename(f)).join(', ')}. Check it before running, in case an AI wrote or edited it.`);
-  return lines.join('\n');
+/** What the approval window shows for a script run. */
+export function describePlan(p: ScriptPlan, extra: string[], reason?: string, requester = 'Claude'): ApprovalPrompt {
+  return {
+    title: `${requester} wants to run a script with your API keys`,
+    requester,
+    reason: cleanReason(reason),
+    details: [
+      { label: 'Script', value: p.script },
+      { label: 'Arguments', value: extra.length ? extra.join(' ') : '(none)' },
+      { label: 'Keys', value: Object.keys(p.env).join(', ') || '(none)' },
+      ...(p.helpers.length ? [{ label: 'Also loads', value: p.helpers.map((f) => path.basename(f)).join(', ') }] : []),
+    ],
+    ...(p.modifiedRecently.length ? { warning: `Changed in the last 24 hours: ${p.modifiedRecently.map((f) => path.basename(f)).join(', ')}. Check it before running, in case an AI wrote or edited it.` } : {}),
+  };
 }
 
 /**
- * Asks the user in a native dialog. Resolves true only for an explicit "Run"; Deny, closing it, the 2-minute timeout or
- * no way to show a dialog all mean no. The text is passed as data (argv or environment), never spliced into code.
+ * Asks the user in a window of LLLanyard's own. Resolves true only for an explicit "Run"; Deny, closing it, the 2-minute
+ * timeout or no way to show a window all mean no. On macOS and Windows it never takes the keyboard or mouse (see
+ * prompt-window.ts). The text is passed as data (argv or environment), never spliced into code.
  */
-export function confirmDialog(message: string, opts: { platform?: NodeJS.Platform; spawnFn?: typeof spawn; timeoutSec?: number } = {}): Promise<boolean> {
+export function confirmDialog(prompt: ApprovalPrompt, opts: { platform?: NodeJS.Platform; spawnFn?: typeof spawn; timeoutSec?: number } = {}): Promise<boolean> {
   const platform = opts.platform ?? process.platform;
   const t = opts.timeoutSec ?? 120;
   let cmd: string, args: string[], yes: (out: string, code: number | null) => boolean;
-  // Windows' message box has fixed Yes / No buttons, so the text must say Yes where the other dialogs say Run.
-  const env = { ...process.env, LLY_MSG: platform === 'win32' ? message.replace(/\bclick Run\b/g, 'click Yes') : message };
+  const data = JSON.stringify(prompt);
+  const env = { ...process.env, LLY_PROMPT: data, LLY_TIMEOUT: String(t) };
+  const printedRun = (out: string, code: number | null) => code === 0 && out.trim() === 'RUN';
   if (platform === 'darwin') {
     cmd = '/usr/bin/osascript';
-    args = ['-e', 'on run argv', '-e', `display dialog (item 1 of argv) with title "LLLanyard" buttons {"Deny", "Run"} default button "Deny" cancel button "Deny" with icon caution giving up after ${t}`, '-e', 'end run', '--', message];
-    yes = (out, code) => code === 0 && /button returned:Run\b/.test(out) && !/gave up:true/.test(out);
+    args = ['-l', 'JavaScript', '-e', MAC_PROMPT, '--', data, String(t)];
+    yes = printedRun;
   } else if (platform === 'win32') {
     cmd = 'powershell.exe';
-    const ps = 'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.Form -Property @{TopMost=$true}; ' +
-      "$r = [System.Windows.Forms.MessageBox]::Show($f, $env:LLY_MSG, 'LLLanyard', 'YesNo', 'Warning', 'Button2'); if ($r -eq 'Yes') { 'RUN' }";
-    args = ['-NoProfile', '-NonInteractive', '-Command', ps];
-    yes = (out, code) => code === 0 && out.trim() === 'RUN';
+    args = ['-NoProfile', '-NonInteractive', '-Command', WIN_PROMPT];
+    yes = printedRun;
   } else {
     cmd = 'zenity';
-    args = ['--question', '--no-markup', '--title=LLLanyard', `--text=${message}`, '--ok-label=Run', '--cancel-label=Deny', '--default-cancel', `--timeout=${t}`];
+    args = ['--question', '--no-markup', '--title=LLLanyard', `--text=${promptText(prompt)}`, '--ok-label=Run', '--cancel-label=Deny', '--default-cancel', `--timeout=${t}`];
     yes = (_out, code) => code === 0;
   }
   return new Promise((resolve) => {

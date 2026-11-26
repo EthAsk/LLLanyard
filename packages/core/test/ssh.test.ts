@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  createBackup, createMcpHandler, describeSshRun, summarize, generateKey, keyIsEncrypted, MemoryBackend, normaliseKey, openSshSession, readBackup, restoreBackup, sshArgs, SshStore, StoreError, validateSsh, KeyringStore,
+  createBackup, createMcpHandler, describeSshRun, promptText, summarize, generateKey, keyIsEncrypted, MemoryBackend, normaliseKey, openSshSession, readBackup, restoreBackup, sshArgs, SshStore, StoreError, validateSsh, KeyringStore,
 } from '../src/index.js';
 
 const haveSsh = spawnSync('ssh-keygen', ['-V'], { encoding: 'utf8' }).error === undefined && spawnSync('ssh-agent', ['-k'], { encoding: 'utf8' }).error === undefined;
@@ -156,7 +156,7 @@ test('mcp: ssh tools appear only with the runner, list_ssh shows no secrets, ssh
   assert.equal(rpc(h, 'tools/list').result.tools.find((t: any) => t.name === 'ssh_run').annotations.destructiveHint, true);
   const listed = rpc(h, 'tools/call', { name: 'list_ssh', arguments: {} }).result.content[0].text;
   assert.match(listed, /deploy@prod\.example\.com/);
-  const ok = await rpc(h, 'tools/call', { name: 'ssh_run', arguments: { name: 'PROD', command: 'uptime' } });
+  const ok = await rpc(h, 'tools/call', { name: 'ssh_run', arguments: { name: 'PROD', command: 'uptime', reason: 'Checks uptime.' } });
   assert.match(ok.result.content[0].text, /Exit code 0[\s\S]*up 3 days/);
   assert.deepEqual(calls, ['prod:uptime']);
   for (const args of [{ name: 'nope', command: 'ls' }, { name: 'prod', command: '' }, { name: 'prod', command: 'x'.repeat(1501) }]) {
@@ -170,12 +170,12 @@ test('mcp: ssh tools appear only with the runner, list_ssh shows no secrets, ssh
 
 test('mcp: a denied dialog is reported as not run', async () => {
   const h = mcpWith(async () => null);
-  const r = await rpc(h, 'tools/call', { name: 'ssh_run', arguments: { name: 'prod', command: 'reboot' } });
+  const r = await rpc(h, 'tools/call', { name: 'ssh_run', arguments: { name: 'prod', command: 'reboot', reason: 'Restarts it.' } });
   assert.match(r.result.content[0].text, /^Not run: the user clicked Deny/);
 });
 
 test('ssh: the confirmation dialog shows the login and the exact command', () => {
-  const t = describeSshRun({ name: 'prod', user: 'deploy', host: 'prod.example.com', port: 2222 }, 'sudo systemctl restart app');
+  const t = promptText(describeSshRun({ name: 'prod', user: 'deploy', host: 'prod.example.com', port: 2222 }, 'sudo systemctl restart app'));
   assert.match(t, /prod \(deploy@prod\.example\.com:2222\)/);
   assert.match(t, /Command: sudo systemctl restart app/);
 });

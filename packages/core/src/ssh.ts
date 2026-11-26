@@ -7,6 +7,8 @@ import { minimalEnv } from './run.js';
 import { createScrubber } from './scrub.js';
 import { defaultBackend, type SecretBackend } from './storage/backend.js';
 import { assertName, StoreError } from './storage/keyring-store.js';
+import type { ApprovalPrompt } from './prompt-window.js';
+import { cleanReason } from './reason.js';
 
 /**
  * SSH logins kept in the keychain: a host, a user, and either a private key (with its passphrase, if it has one) or a
@@ -371,13 +373,17 @@ export function publicKeyOf(privateKey: string, tmp = os.tmpdir()): string | und
 export const SSH_COMMAND_MAX = 1500;
 
 /** The text of the confirmation dialog for an AI asking to run a command on a server. */
-export function describeSshRun(e: Pick<SshEntry, 'name' | 'user' | 'host' | 'port'>, command: string, requester = 'Claude'): string {
-  return [
-    `${requester} wants to run a command on a server.`, '',
-    `Login: ${e.name} (${e.user}@${e.host}${e.port === 22 ? '' : ':' + e.port})`,
-    `Command: ${command}`,
-    '', 'It runs with your stored login. Only click Run if you expect this command.',
-  ].join('\n');
+export function describeSshRun(e: Pick<SshEntry, 'name' | 'user' | 'host' | 'port'>, command: string, reason?: string, requester = 'Claude'): ApprovalPrompt {
+  return {
+    title: `${requester} wants to run a command on a server`,
+    requester,
+    reason: cleanReason(reason),
+    details: [
+      { label: 'Login', value: `${e.name} (${e.user}@${e.host}${e.port === 22 ? '' : ':' + e.port})` },
+      { label: 'Command', value: command },
+    ],
+    note: 'It runs with your stored login. Only click Run if you expect this command.',
+  };
 }
 
 /**

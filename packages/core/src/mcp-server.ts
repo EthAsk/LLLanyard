@@ -1,4 +1,5 @@
 import type { Readable, Writable } from 'node:stream';
+import { cleanReason, REASON_MAX } from './reason.js';
 import { rotationStatus } from './rotation.js';
 import type { KeyMeta } from './storage/types.js';
 import type { UsageSummary } from './usage.js';
@@ -26,9 +27,9 @@ export interface McpDeps {
     run: (name: string, args: string[]) => Promise<RunResult>;
     // Script folders the user allowed for run_file; each run is confirmed by the user in a dialog. null = denied.
     scriptDirs?: string[];
-    runFile?: (file: string, args: string[]) => Promise<RunResult | null>;
+    runFile?: (file: string, args: string[], reason: string) => Promise<RunResult | null>;
     // The user's stored SSH logins. run() asks the user in a dialog for every command; null = denied.
-    ssh?: { list: () => SshInfo[]; run: (name: string, command: string) => Promise<RunResult | null> };
+    ssh?: { list: () => SshInfo[]; run: (name: string, command: string, reason: string) => Promise<RunResult | null> };
   };
 }
 
@@ -53,12 +54,17 @@ const RUN_TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true } },
 ];
 
+const REASON = {
+  type: 'string', maxLength: REASON_MAX,
+  description: 'Shown to the user in the approval window. One or two short sentences in plain English, without jargon: what this will do, what it will change (or that it only reads), and why you want it. Be accurate.',
+};
+
 const SSH_TOOLS = [
   { name: 'list_ssh', description: 'List the SSH logins the user has stored in LLLanyard: name, user@host and whether it uses a key or a password. Never returns keys or passwords.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } },
   { name: 'ssh_run', description: 'Run ONE command on a server using a stored SSH login (names from list_ssh). LLLanyard shows the user the login and the exact command in a dialog and runs it only if they click Run; you cannot approve it yourself. ' +
       'The command runs with no terminal and no input (nothing interactive, no sudo password prompts), and its output and exit code come back. You never see the key or password and must not ask for them. If the user clicks Deny, do not retry unless they ask.',
-    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Login name from list_ssh' }, command: { type: 'string', maxLength: 1500, description: 'The command to run on the server' } }, required: ['name', 'command'], additionalProperties: false },
+    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Login name from list_ssh' }, command: { type: 'string', maxLength: 1500, description: 'The command to run on the server' }, reason: REASON }, required: ['name', 'command', 'reason'], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true } },
 ];
 
@@ -68,7 +74,7 @@ const runFileTool = (dirs: string[]) => ({
     'LLLanyard shows the user a dialog with the script, arguments and keys, and runs it only if they click Run; you cannot approve it yourself. ' +
     'Supported: .ps1 (pwsh), .py, .sh, .zsh, .js. Keys in the output are redacted. The script gets no input, so it must not wait for prompts. ' +
     'Prefer run_script for scripts in list_scripts: they need no dialog.',
-  inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'Full path of the script' }, args: { type: 'array', items: { type: 'string' }, maxItems: 100 } }, required: ['path'], additionalProperties: false },
+  inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'Full path of the script' }, args: { type: 'array', items: { type: 'string' }, maxItems: 100 }, reason: REASON }, required: ['path', 'reason'], additionalProperties: false },
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 });
 
@@ -131,6 +137,11 @@ export function createMcpHandler(deps: McpDeps) {
     if (!Array.isArray(extra) || extra.length > 100 || extra.some((a) => typeof a !== 'string' || a.length > 1000 || a.includes('\0'))) throw new Error('args must be a list of at most 100 short strings.');
     return extra as string[];
   };
+  const requiredReason = (args: any): string => {
+    const r = cleanReason(args?.reason);
+    if (!r) throw new Error('reason is required: tell the user in plain English what this will do and why.');
+    return r;
+  };
   const report = (r: RunResult) => {
     const head = r.timedOut ? `Stopped: time limit reached. Exit code ${r.exitCode}.` : `Exit code ${r.exitCode}.`;
     return `${head}${r.truncated ? ' Output was long; only the end is shown.' : ''}\n\n${r.output}`;
@@ -138,7 +149,7 @@ export function createMcpHandler(deps: McpDeps) {
   const runFile = async (args: any): Promise<string> => {
     const file = typeof args?.path === 'string' ? args.path : '';
     if (!file) throw new Error('path is required.');
-    const r = await deps.runner!.runFile!(file, extraArgs(args));
+    const r = await deps.runner!.runFile!(file, extraArgs(args), requiredReason(args));
     return r ? report(r) : 'Not run: the user clicked Deny (or the dialog timed out or could not be shown). Do not retry unless the user asks.';
   };
 
@@ -147,7 +158,7 @@ export function createMcpHandler(deps: McpDeps) {
     const command = typeof args?.command === 'string' ? args.command : '';
     if (!deps.runner!.ssh!.list().some((l) => l.name === name.toLowerCase())) throw new Error(`No SSH login "${name}". Use list_ssh; the user adds logins with lllanyard ssh add.`);
     if (!command.trim() || command.length > 1500 || command.includes('\0')) throw new Error('command must be 1-1500 characters.');
-    const r = await deps.runner!.ssh!.run(name.toLowerCase(), command);
+    const r = await deps.runner!.ssh!.run(name.toLowerCase(), command, requiredReason(args));
     return r ? report(r) : 'Not run: the user clicked Deny (or the dialog timed out or could not be shown). Do not retry unless the user asks.';
   };
 
@@ -170,7 +181,7 @@ export function createMcpHandler(deps: McpDeps) {
     switch (msg.method) {
       case 'initialize': {
         const want = String(msg.params?.protocolVersion ?? '');
-        return ok({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0]!, capabilities: { tools: {} }, serverInfo: { name: 'lllanyard', version: '1.0.0' },
+        return ok({ protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0]!, capabilities: { tools: {} }, serverInfo: { name: 'lllanyard', version: '1.1.0' },
           instructions: [
             'The user keeps their API keys in LLLanyard (the OS keychain). No tool here returns a key, and you must never ask for one or look for keys in .env or config files.',
             'Each key is stored as provider + label (e.g. github:default, jira:secret) with the environment variable scripts get it as. key_status lists every stored key; list_providers covers only the HTTP APIs the proxy calls, so most script keys are not in it.',

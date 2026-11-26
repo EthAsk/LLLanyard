@@ -14,6 +14,8 @@ export * from './mcp-server.js';
 export * from './assistant.js';
 export * from './backup.js';
 export * from './script-file.js';
+export * from './reason.js';
+export { promptText, type ApprovalPrompt } from './prompt-window.js';
 export * from './integrations.js';
 export * from './claude-app.js';
 export * from './team.js';

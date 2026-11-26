@@ -6,6 +6,15 @@ updates.
 
 ## Unreleased
 
+## 1.1.0 (26 November 2026)
+
+- The approval pop-up has a new, clearer design on macOS and Windows, in light or dark to match your system.
+- The approval pop-up no longer takes your keyboard or mouse. On macOS and Windows it appears in the bottom-right corner
+  and only a click answers it, so typing can't approve or deny a run by accident.
+- The pop-up now says in plain English what the AI wants to do and why. These are the AI's own words, so check them
+  against the script or command shown underneath. Restart your AI app after updating. For SSH logins with `--confirm`
+  used from a terminal, run `lllanyard setup` again so your agent knows to add `--reason`.
+
 ## 1.0.0 (14 November 2026)
 
 The first stable release. Your stored keys, SSH logins and settings carry over unchanged. One small change: `policy` is now

